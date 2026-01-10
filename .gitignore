@@ -21,7 +21,7 @@ Thumbs.db
 # Project-specific
 recordings/
 data/
-config.json
+
 
 # Logs
 *.log

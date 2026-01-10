@@ -1,0 +1,33 @@
+{
+    "calibration_board": {
+        "rows": 8,
+        "cols": 12,
+        "square_length": 0.024,
+        "marker_length": 0.018,
+        "dictionary_id": "DICT_4X4_100"
+    },
+    "pen": {
+        "ir_threshold": 60000,
+        "min_area": 10,
+        "max_area": 2000,
+        "roi_scale": 0.5,
+        "sample_margin": 0.2,
+        "pen_length_m": 0.15,
+        "length_tolerance_m": 0.05,
+        "ransac_threshold": 0.005,
+        "min_depth_m": 0.1,
+        "max_depth_m": 3.0
+    },
+  "camera": {
+    "type": "realsense",
+    "realsense": {
+      "preset": "high_accuracy",
+      "use_max_resolution": true,
+      "fps": 30,
+      "enable_ir": true
+    }
+  },
+  "debug": {
+    "skip_calibration": true
+  }
+}
