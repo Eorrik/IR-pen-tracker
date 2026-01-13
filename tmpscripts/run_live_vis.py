@@ -249,13 +249,9 @@ def main():
 
     # 1. Initialize Camera
     print("Initializing Camera...")
-    try:
-        camera = KinectCamera()
-        if not camera.open():
-            print("Failed to open Kinect. Falling back to OpenCV.")
-            camera = OpenCVCamera(args.camera)
-    except Exception as e:
-        print(f"Error opening Kinect: {e}")
+    camera = KinectCamera()
+    if not camera.open():
+        print("Failed to open Kinect. Falling back to OpenCV.")
         camera = OpenCVCamera(args.camera)
 
     if not camera.open():
@@ -273,75 +269,49 @@ def main():
 
     print("Starting loop. Press 'q' to quit.")
     
-    try:
-        while True:
-            # Read Frame
-            frame = camera.read_frame()
-            if frame is None:
-                continue
-
-            # Process
-            t0 = time.time()
-            skeleton = body_tracker.track(frame)
-            brush_pose, debug_info = pen_tracker.track_debug(frame)
-            dt = time.time() - t0
-            fps = 1.0 / dt if dt > 0 else 0
-
-            # Visualize RGB
-            vis = frame.color.copy()
-            
-            # Blend Masks for Debug
-            mask_red = debug_info.get("mask_red")
-            if mask_red is not None:
-                # Add Red Mask overlay (semi-transparent red)
-                red_overlay = np.zeros_like(vis)
-                red_overlay[mask_red > 0] = [0, 0, 255] # BGR: Red
-                vis = cv2.addWeighted(vis, 1.0, red_overlay, 0.5, 0)
-                
-            mask_blue = debug_info.get("mask_blue")
-            if mask_blue is not None:
-                # Add Blue Mask overlay (semi-transparent blue)
-                blue_overlay = np.zeros_like(vis)
-                blue_overlay[mask_blue > 0] = [255, 0, 0] # BGR: Blue
-                vis = cv2.addWeighted(vis, 1.0, blue_overlay, 0.5, 0)
-
-            # Draw Centroids and Depth Info
-            c_red = debug_info.get("c_red")
-            z_tip = debug_info.get("z_tip")
-            if c_red:
-                cx, cy = int(c_red[0]), int(c_red[1])
-                cv2.circle(vis, (cx, cy), 8, (0, 255, 255), -1) # Yellow Dot
-                depth_str = f"{z_tip:.2f}m" if z_tip is not None else "NaN"
-                cv2.putText(vis, f"Tip:{depth_str}", (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-
-            c_blue = debug_info.get("c_blue")
-            z_end = debug_info.get("z_end")
-            if c_blue:
-                cx, cy = int(c_blue[0]), int(c_blue[1])
-                cv2.circle(vis, (cx, cy), 8, (255, 255, 0), -1) # Cyan Dot
-                depth_str = f"{z_end:.2f}m" if z_end is not None else "NaN"
-                cv2.putText(vis, f"End:{depth_str}", (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-            
-            # Draw Skeleton
-            vis = _draw_skeleton_and_overlay(vis, skeleton, frame.intrinsics)
-            
-            # Draw Pen
-            vis = _draw_pen_overlay(vis, brush_pose, frame.intrinsics)
-
-            # Draw FPS
-            cv2.putText(vis, f"FPS: {fps:.1f}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            
-            cv2.imshow("Kinect Pen Tracking (RGB)", vis)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-
-    except KeyboardInterrupt:
-        pass
-    finally:
-        print("Closing...")
-        camera.close()
-        cv2.destroyAllWindows()
+    while True:
+        frame = camera.read_frame()
+        if frame is None:
+            continue
+        t0 = time.time()
+        skeleton = body_tracker.track(frame)
+        brush_pose, debug_info = pen_tracker.track_debug(frame)
+        dt = time.time() - t0
+        fps = 1.0 / dt if dt > 0 else 0
+        vis = frame.color.copy()
+        mask_red = debug_info.get("mask_red")
+        if mask_red is not None:
+            red_overlay = np.zeros_like(vis)
+            red_overlay[mask_red > 0] = [0, 0, 255]
+            vis = cv2.addWeighted(vis, 1.0, red_overlay, 0.5, 0)
+        mask_blue = debug_info.get("mask_blue")
+        if mask_blue is not None:
+            blue_overlay = np.zeros_like(vis)
+            blue_overlay[mask_blue > 0] = [255, 0, 0]
+            vis = cv2.addWeighted(vis, 1.0, blue_overlay, 0.5, 0)
+        c_red = debug_info.get("c_red")
+        z_tip = debug_info.get("z_tip")
+        if c_red:
+            cx, cy = int(c_red[0]), int(c_red[1])
+            cv2.circle(vis, (cx, cy), 8, (0, 255, 255), -1)
+            depth_str = f"{z_tip:.2f}m" if z_tip is not None else "NaN"
+            cv2.putText(vis, f"Tip:{depth_str}", (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        c_blue = debug_info.get("c_blue")
+        z_end = debug_info.get("z_end")
+        if c_blue:
+            cx, cy = int(c_blue[0]), int(c_blue[1])
+            cv2.circle(vis, (cx, cy), 8, (255, 255, 0), -1)
+            depth_str = f"{z_end:.2f}m" if z_end is not None else "NaN"
+            cv2.putText(vis, f"End:{depth_str}", (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        vis = _draw_skeleton_and_overlay(vis, skeleton, frame.intrinsics)
+        vis = _draw_pen_overlay(vis, brush_pose, frame.intrinsics)
+        cv2.putText(vis, f"FPS: {fps:.1f}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.imshow("Kinect Pen Tracking (RGB)", vis)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    print("Closing...")
+    camera.close()
+    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

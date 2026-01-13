@@ -24,7 +24,9 @@
       "preset": "high_accuracy",
       "use_max_resolution": true,
       "fps": 30,
-      "enable_ir": true
+      "enable_ir": true,
+      "laser_power": 360,
+      "exposure": 6000
     }
   },
   "debug": {

@@ -14,8 +14,10 @@ def load_config(config_path="config.json"):
             "realsense": {
                 "preset": "high_accuracy",
                 "use_max_resolution": True,
-                "fps": 30,
-                "enable_ir": True
+            "fps": 30,
+                "enable_ir": True,
+                "laser_power": None,
+                "exposure": None
             }
         },
         "debug": {
@@ -57,23 +59,19 @@ def load_config(config_path="config.json"):
             print(f"Config file {config_path} not found. Using defaults.")
             return defaults
 
-    try:
-        with open(config_path, 'r') as f:
-            user_config = json.load(f)
+    with open(config_path, 'r') as f:
+        user_config = json.load(f)
+        
+    # Merge user config with defaults (shallow merge for top-level keys)
+    # Deep merge would be better but simple is fine for now
+    config = defaults.copy()
+    for key, value in user_config.items():
+        if isinstance(value, dict) and key in config:
+            config[key].update(value)
+        else:
+            config[key] = value
             
-        # Merge user config with defaults (shallow merge for top-level keys)
-        # Deep merge would be better but simple is fine for now
-        config = defaults.copy()
-        for key, value in user_config.items():
-            if isinstance(value, dict) and key in config:
-                config[key].update(value)
-            else:
-                config[key] = value
-                
-        return config
-    except Exception as e:
-        print(f"Error loading config: {e}. Using defaults.")
-        return defaults
+    return config
 
 def get_aruco_dict(dict_name):
     """

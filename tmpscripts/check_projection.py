@@ -78,25 +78,21 @@ def main():
     desk_plane = None
     calib_file = os.path.join(project_root, "desk_calibration.json")
     if os.path.exists(calib_file):
-        try:
-            with open(calib_file, 'r') as f:
-                data = json.load(f)
-                if "plane_equation" in data:
-                    desk_plane = np.array(data["plane_equation"])
-                    print(f"Loaded Desk Plane: {desk_plane}")
-        except Exception as e:
-            print(f"Failed to load desk calibration: {e}")
+        with open(calib_file, 'r') as f:
+            data = json.load(f)
+            if "plane_equation" in data:
+                desk_plane = np.array(data["plane_equation"])
+                print(f"Loaded Desk Plane: {desk_plane}")
 
     cv2.namedWindow("Check Projection", cv2.WINDOW_NORMAL)
     cv2.setMouseCallback("Check Projection", mouse_callback)
 
     print("Running... Press 'q' to quit.")
     
-    try:
-        while True:
-            frame = cam.read_frame()
-            if frame is None:
-                continue
+    while True:
+        frame = cam.read_frame()
+        if frame is None:
+            continue
 
             # --- 1. Prepare Images ---
             
@@ -164,25 +160,17 @@ def main():
                     z_mm = float(frame.depth[v_d, u_d])
                     
                     if z_mm > 0:
-                        try:
-                            # Use SDK convert_2d_to_2d (Depth -> Color)
-                            # source_point2d: (x, y), source_depth: float (mm), source_camera, target_camera
-                            uv_c_float = k4a_calib.convert_2d_to_2d(
-                                (u_d, v_d),
-                                z_mm,
-                                pyk4a.CalibrationType.DEPTH,
-                                pyk4a.CalibrationType.COLOR
-                            )
-                            
-                            if uv_c_float is not None:
-                                u_c, v_c = uv_c_float
-                                # Apply Scale for Visualization
-                                u_c_vis = int(u_c * scale_c)
-                                v_c_vis = int(v_c * scale_c)
-                                pt_to_draw_on_color = (u_c_vis, v_c_vis)
-                        except Exception as e:
-                            # Conversion might fail if point is out of bounds
-                            pass
+                        uv_c_float = k4a_calib.convert_2d_to_2d(
+                            (u_d, v_d),
+                            z_mm,
+                            pyk4a.CalibrationType.DEPTH,
+                            pyk4a.CalibrationType.COLOR
+                        )
+                        if uv_c_float is not None:
+                            u_c, v_c = uv_c_float
+                            u_c_vis = int(u_c * scale_c)
+                            v_c_vis = int(v_c * scale_c)
+                            pt_to_draw_on_color = (u_c_vis, v_c_vis)
                             
             elif w_d_new <= mouse_x < (w_d_new + w_c_new) and 0 <= mouse_y < COLOR_H_TARGET:
                 # Mouse in Color
@@ -237,22 +225,17 @@ def main():
                             z_c_mm = p_int_c[2] * 1000.0
                             
                             if z_c_mm > 0:
-                                try:
-                                    # Use SDK convert_2d_to_2d (Color -> Depth)
-                                    uv_d_float = k4a_calib.convert_2d_to_2d(
-                                        (u_c, v_c),
-                                        z_c_mm,
-                                        pyk4a.CalibrationType.COLOR,
-                                        pyk4a.CalibrationType.DEPTH
-                                    )
-                                    
-                                    if uv_d_float is not None:
-                                        u_d, v_d = uv_d_float
-                                        u_d_vis = int(u_d * scale_d)
-                                        v_d_vis = int(v_d * scale_d)
-                                        pt_to_draw_on_depth = (u_d_vis, v_d_vis)
-                                except:
-                                    pass
+                                uv_d_float = k4a_calib.convert_2d_to_2d(
+                                    (u_c, v_c),
+                                    z_c_mm,
+                                    pyk4a.CalibrationType.COLOR,
+                                    pyk4a.CalibrationType.DEPTH
+                                )
+                                if uv_d_float is not None:
+                                    u_d, v_d = uv_d_float
+                                    u_d_vis = int(u_d * scale_d)
+                                    v_d_vis = int(v_d * scale_d)
+                                    pt_to_draw_on_depth = (u_d_vis, v_d_vis)
 
             # Draw Points
             if pt_to_draw_on_color:
@@ -277,11 +260,8 @@ def main():
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
                 
-    except KeyboardInterrupt:
-        pass
-    finally:
-        cam.close()
-        cv2.destroyAllWindows()
+    cam.close()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()

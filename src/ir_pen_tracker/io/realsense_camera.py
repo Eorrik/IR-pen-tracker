@@ -8,8 +8,9 @@ from ..core.interfaces import ICamera
 from ..core.types import Frame
 
 class RealSenseCamera(ICamera):
-    def __init__(self, depth_width=640, depth_height=480, color_width=640, color_height=480, fps=30, enable_ir=True, preset="high_accuracy"):
+    def __init__(self, depth_width=640, depth_height=480, color_width=640, color_height=480, fps=30, enable_ir=True, preset="high_accuracy", laser_power: Optional[float] = None, exposure: Optional[float] = None):
         self._pipe: Optional[rs.pipeline] = None
+        self._depth_sensor: Optional[rs.depth_sensor] = None
         self._cfg: Optional[rs.config] = None
         self._frame_id = 0
         self._depth_w = int(depth_width)
@@ -24,6 +25,11 @@ class RealSenseCamera(ICamera):
         self._color_dist_coeffs: Optional[np.ndarray] = None
         self._extrinsics_c2d: Optional[tuple] = None
         self._depth_scale_m: Optional[float] = None
+        self._ir_left_intrinsics: Optional[np.ndarray] = None
+        self._ir_right_intrinsics: Optional[np.ndarray] = None
+        self._stereo_baseline_m: Optional[float] = None
+        self._laser_power: Optional[float] = laser_power
+        self._exposure: Optional[float] = exposure
 
     def open(self) -> bool:
         self._pipe = rs.pipeline()
@@ -31,29 +37,23 @@ class RealSenseCamera(ICamera):
         self._cfg.enable_stream(rs.stream.depth, self._depth_w, self._depth_h, rs.format.z16, self._fps)
         self._cfg.enable_stream(rs.stream.color, self._color_w, self._color_h, rs.format.bgr8, self._fps)
         if self._enable_ir:
-            try:
-                self._cfg.enable_stream(rs.stream.infrared, 1, self._depth_w, self._depth_h, rs.format.y8, self._fps)
-            except Exception:
-                self._cfg.enable_stream(rs.stream.infrared, self._depth_w, self._depth_h, rs.format.y8, self._fps)
+            self._cfg.enable_stream(rs.stream.infrared, 1, self._depth_w, self._depth_h, rs.format.y8, self._fps)
+            self._cfg.enable_stream(rs.stream.infrared, 2, self._depth_w, self._depth_h, rs.format.y8, self._fps)
         profile = self._pipe.start(self._cfg)
         dev = profile.get_device()
         depth_sensor = dev.first_depth_sensor()
-        try:
-            self._depth_scale_m = float(depth_sensor.get_depth_scale())
-        except Exception:
-            self._depth_scale_m = 0.001
-        try:
-            if depth_sensor.supports(rs.option.visual_preset):
-                preset_map = {
-                    "default": 0.0,
-                    "hand": 1.0,
-                    "high_accuracy": 3.0,
-                    "high_density": 4.0
-                }
-                val = preset_map.get(self._preset, 3.0)
-                depth_sensor.set_option(rs.option.visual_preset, val)
-        except Exception:
-            pass
+        depth_sensor.set_option(rs.option.laser_power,float(self._laser_power))
+        print("Laser Power Status:")
+        print(depth_sensor.get_option(rs.option.laser_power))
+        if self._exposure is not None:
+            depth_sensor.set_option(rs.option.enable_auto_exposure, 0)
+            depth_sensor.set_option(rs.option.exposure, float(self._exposure))
+            print("Exposure Status:")
+            print(depth_sensor.get_option(rs.option.exposure))
+            print("Auto Exposure Status:")
+            print(depth_sensor.get_option(rs.option.enable_auto_exposure))
+
+    
         pipe_profile = self._pipe.get_active_profile()
         depth_sp = pipe_profile.get_stream(rs.stream.depth).as_video_stream_profile()
         color_sp = pipe_profile.get_stream(rs.stream.color).as_video_stream_profile()
@@ -67,6 +67,16 @@ class RealSenseCamera(ICamera):
         t_m = np.array(ex.translation, dtype=np.float32).reshape(3)
         t_mm = t_m * 1000.0
         self._extrinsics_c2d = (R, t_mm)
+        if self._enable_ir:
+            ir_left_sp = pipe_profile.get_stream(rs.stream.infrared, 1).as_video_stream_profile()
+            ir_right_sp = pipe_profile.get_stream(rs.stream.infrared, 2).as_video_stream_profile()
+            intr_l = ir_left_sp.get_intrinsics()
+            intr_r = ir_right_sp.get_intrinsics()
+            self._ir_left_intrinsics = np.array([float(intr_l.fx), float(intr_l.fy), float(intr_l.ppx), float(intr_l.ppy)], dtype=np.float32)
+            self._ir_right_intrinsics = np.array([float(intr_r.fx), float(intr_r.fy), float(intr_r.ppx), float(intr_r.ppy)], dtype=np.float32)
+            ex_ir = ir_left_sp.get_extrinsics_to(ir_right_sp)
+            t_ir = np.array(ex_ir.translation, dtype=np.float32).reshape(3)
+            self._stereo_baseline_m = float(abs(t_ir[0]))
         self._frame_id = 0
         return True
 
@@ -84,33 +94,42 @@ class RealSenseCamera(ICamera):
     def read_frame(self) -> Optional[Frame]:
         if self._pipe is None:
             return None
+
         frames = self._pipe.wait_for_frames()
         ts = time.time()
         depth_frame = frames.get_depth_frame()
         if depth_frame is None:
             raise RuntimeError("failed to capture depth image")
         color_frame = frames.get_color_frame()
-        ir_frame = None
+        ir_frame_left = None
+        ir_frame_right = None
         if self._enable_ir:
-            try:
-                ir_frame = frames.get_infrared_frame(1)
-            except Exception:
-                ir_frame = frames.get_infrared_frame()
+            ir_frame_left = frames.get_infrared_frame(1)
+            ir_frame_right = frames.get_infrared_frame(2)
         depth = np.asanyarray(depth_frame.get_data())
         if depth.dtype != np.uint16:
             depth = depth.astype(np.uint16)
         color = None
         if color_frame is not None:
             color = np.asanyarray(color_frame.get_data())
-        ir = None
-        if ir_frame is not None:
-            ir_arr = np.asanyarray(ir_frame.get_data())
+        ir_left = None
+        ir_right = None
+        if ir_frame_left is not None:
+            ir_arr = np.asanyarray(ir_frame_left.get_data())
             if ir_arr.dtype == np.uint8:
-                ir = (ir_arr.astype(np.uint16) * 257)
+                ir_left = (ir_arr.astype(np.uint16) * 257)
             elif ir_arr.dtype == np.uint16:
-                ir = ir_arr
+                ir_left = ir_arr
             else:
-                ir = ir_arr.astype(np.uint16)
+                ir_left = ir_arr.astype(np.uint16)
+        if ir_frame_right is not None:
+            ir_arr_r = np.asanyarray(ir_frame_right.get_data())
+            if ir_arr_r.dtype == np.uint8:
+                ir_right = (ir_arr_r.astype(np.uint16) * 257)
+            elif ir_arr_r.dtype == np.uint16:
+                ir_right = ir_arr_r
+            else:
+                ir_right = ir_arr_r.astype(np.uint16)
         if self._intrinsics is None:
             raise RuntimeError("intrinsics not loaded")
         frame = Frame(
@@ -118,8 +137,13 @@ class RealSenseCamera(ICamera):
             frame_id=self._frame_id,
             color=color,
             depth=depth,
-            ir=ir,
             intrinsics=self._intrinsics,
+            ir=ir_left,
+            ir_main=ir_left,
+            ir_aux=ir_right,
+            ir_main_intrinsics=self._ir_left_intrinsics,
+            ir_aux_intrinsics=self._ir_right_intrinsics,
+            stereo_baseline_m=self._stereo_baseline_m,
             color_intrinsics=self._color_intrinsics,
             extrinsics_color_to_depth=self._extrinsics_c2d
         )
@@ -128,8 +152,5 @@ class RealSenseCamera(ICamera):
 
     def close(self):
         if self._pipe:
-            try:
-                self._pipe.stop()
-            except Exception:
-                pass
+            self._pipe.stop()
             self._pipe = None

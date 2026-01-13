@@ -22,11 +22,10 @@ def main():
 
     alpha = 0.5
 
-    try:
-        while True:
-            capture = k4a.get_capture()
-            if capture.depth is None or capture.color is None:
-                continue
+    while True:
+        capture = k4a.get_capture()
+        if capture.depth is None or capture.color is None:
+            continue
 
             # 1. Get Color Image (BGRA -> BGR)
             color_frame = capture.color
@@ -69,11 +68,8 @@ def main():
             elif key == ord('-') or key == ord('_'):
                 alpha = max(0.0, alpha - 0.1)
 
-    except KeyboardInterrupt:
-        pass
-    finally:
-        k4a.stop()
-        cv2.destroyAllWindows()
+    k4a.stop()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()

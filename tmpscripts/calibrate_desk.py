@@ -35,39 +35,22 @@ OUTPUT_FILE = "desk_calibration.json"
 
 def main():
     print(f"Initializing Kinect Camera...")
-    try:
-        # Use Raw Color for calibration to ensure independent data streams
-        cam = KinectCamera(use_raw_color=True)
-        if not cam.open():
-            print("Failed to open camera (cam.open() returned False)")
-            return
-    except Exception as e:
-        print(f"Error opening camera: {e}")
+    cam = KinectCamera(use_raw_color=True)
+    if not cam.open():
+        print("Failed to open camera (cam.open() returned False)")
         return
 
     print("Camera initialized.")
     
     # --- Setup ChAruco ---
     aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT_ID)
-    # Check OpenCV version for API compatibility
-    try:
-        # OpenCV 4.7+ API
-        board = cv2.aruco.CharucoBoard(
-            (CHARUCOBOARD_COLCOUNT, CHARUCOBOARD_ROWCOUNT),
-            SQUARE_LENGTH,
-            MARKER_LENGTH,
-            aruco_dict
-        )
-        board.setLegacyPattern(True)
-    except AttributeError:
-        # OpenCV < 4.7 API
-        print("Using legacy OpenCV ArUco API")
-        board = cv2.aruco.CharucoBoard_create(
-            CHARUCOBOARD_COLCOUNT, CHARUCOBOARD_ROWCOUNT,
-            SQUARE_LENGTH,
-            MARKER_LENGTH,
-            aruco_dict
-        )
+    board = cv2.aruco.CharucoBoard(
+        (CHARUCOBOARD_COLCOUNT, CHARUCOBOARD_ROWCOUNT),
+        SQUARE_LENGTH,
+        MARKER_LENGTH,
+        aruco_dict
+    )
+    board.setLegacyPattern(True)
     
     # Create detector parameters
     detector_params = cv2.aruco.DetectorParameters()
@@ -76,11 +59,10 @@ def main():
     print("Press 'SPACE' to capture and calibrate.")
     print("Press 'q' to quit.")
 
-    try:
-        while True:
-            frame = cam.read_frame()
-            if frame is None:
-                continue
+    while True:
+        frame = cam.read_frame()
+        if frame is None:
+            continue
 
             # We can use either IR or Color for calibration.
             # User requested using Color Camera for calibration, but ensuring we have extrinsics/intrinsics handled.
@@ -145,23 +127,16 @@ def main():
                     rvec = None
                     tvec = None
                     
-                    try:
-                        all_obj_points = board.getChessboardCorners()
-                        if charuco_ids is not None:
-                            obj_points = []
-                            for i in range(len(charuco_ids)):
-                                # Fix deprecation warning by extracting scalar
-                                cid_arr = charuco_ids[i]
-                                cid = int(cid_arr[0]) if isinstance(cid_arr, (list, np.ndarray)) else int(cid_arr)
-                                obj_points.append(all_obj_points[cid])
-                            
-                            obj_points = np.array(obj_points, dtype=np.float32)
-                            
-                            success, rvec, tvec = cv2.solvePnP(obj_points, charuco_corners, camera_matrix, dist_coeffs)
-                            valid_pose = success
-                    except Exception as e:
-                        print(f"Error in PnP: {e}")
-                        pass
+                    all_obj_points = board.getChessboardCorners()
+                    if charuco_ids is not None:
+                        obj_points = []
+                        for i in range(len(charuco_ids)):
+                            cid_arr = charuco_ids[i]
+                            cid = int(cid_arr[0]) if isinstance(cid_arr, (list, np.ndarray)) else int(cid_arr)
+                            obj_points.append(all_obj_points[cid])
+                        obj_points = np.array(obj_points, dtype=np.float32)
+                        success, rvec, tvec = cv2.solvePnP(obj_points, charuco_corners, camera_matrix, dist_coeffs)
+                        valid_pose = success
 
                     if valid_pose:
                         print("Calibration Successful (In Color Frame)!")
@@ -178,93 +153,48 @@ def main():
                         # Actually I updated KinectCamera but left a pass.
                         # Let's get it directly here for now.
                         
-                        try:
-                            calib = cam._cam.calibration
-                            # transform_from_color_to_depth: 
-                            # R (3x3), T (3x1)
-                            # P_depth = R * P_color + T
-                            
-                            # pyk4a calibration object exposes `get_extrinsic_parameters`
-                            # returns (R, T)
-                            # source_camera, target_camera
-                            
-                            # We want to transform Point from Color to Depth.
-                            # So Source=Color, Target=Depth.
-                            
-                            extrinsics = calib.get_extrinsic_parameters(
-                                pyk4a.CalibrationType.COLOR,
-                                pyk4a.CalibrationType.DEPTH
-                            )
-                            
-                            R_c2d = np.array(extrinsics[0], dtype=np.float32) # 3x3
-                            T_c2d = np.array(extrinsics[1], dtype=np.float32).reshape(3, 1) # 3x1 (in mm? or m?)
-                            # PyK4A usually returns meters if configured? No, SDK is usually mm.
-                            # Wait, PyK4A wraps SDK. SDK uses mm.
-                            # But our pen tracker uses meters.
-                            # We need to check units.
-                            # PyK4A get_extrinsic_parameters returns translation in MILLIMETERS usually.
-                            # We should convert to meters.
-                            
-                            T_c2d_m = T_c2d / 1000.0
-                            
-                            print(f"Extrinsics Loaded. T={T_c2d_m.flatten()}")
-
-                            # Transform Plane
-                            # Plane in Color: n_c, d_c
-                            # Point on plane p_c.
-                            # p_d = R * p_c + T
-                            # Normal n_d = R * n_c
-                            
-                            # 1. Get Plane in Color
-                            R_board, _ = cv2.Rodrigues(rvec)
-                            normal_c = R_board[:, 2] # Z axis of board
-                            point_c = tvec.flatten() # Origin of board
-                            
-                            # 2. Transform to Depth
-                            normal_d = R_c2d @ normal_c
-                            point_d = (R_c2d @ point_c.reshape(3,1) + T_c2d_m).flatten()
-                            
-                            # 3. New Plane Equation
-                            a, b, c = normal_d
-                            d = -np.dot(normal_d, point_d)
-                            
-                            print(f"Plane Normal (Depth): [{a:.3f}, {b:.3f}, {c:.3f}]")
-                            print(f"Plane D (Depth): {d:.3f}")
-                            
-                            # Save
-                            calib_data = {
-                                "desk_plane": [float(a), float(b), float(c), float(d)], # Adjusted key to match main.py expectation
-                                "plane_equation": [float(a), float(b), float(c), float(d)], # Keep old key for compatibility
-                                "square_size_m": SQUARE_LENGTH,
-                                "marker_length_m": MARKER_LENGTH,
-                                "type": "charuco_color_aligned",
-                                "extrinsics_R": R_c2d.tolist(),
-                                "extrinsics_T": T_c2d_m.tolist()
-                            }
-                            
-                            with open(OUTPUT_FILE, 'w') as f:
-                                json.dump(calib_data, f, indent=4)
-                            
-                            print(f"Saved to {os.path.abspath(OUTPUT_FILE)}")
-                            
-                            cv2.putText(vis_img, "SAVED!", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-                            cv2.imshow("Desk Calibration (Color)", vis_img)
-                            cv2.waitKey(1000)
-                            break
-                            
-                        except Exception as e:
-                            print(f"Failed to get/apply extrinsics: {e}")
+                        calib = cam._cam.calibration
+                        extrinsics = calib.get_extrinsic_parameters(
+                            pyk4a.CalibrationType.COLOR,
+                            pyk4a.CalibrationType.DEPTH
+                        )
+                        R_c2d = np.array(extrinsics[0], dtype=np.float32)
+                        T_c2d = np.array(extrinsics[1], dtype=np.float32).reshape(3, 1)
+                        T_c2d_m = T_c2d / 1000.0
+                        print(f"Extrinsics Loaded. T={T_c2d_m.flatten()}")
+                        R_board, _ = cv2.Rodrigues(rvec)
+                        normal_c = R_board[:, 2]
+                        point_c = tvec.flatten()
+                        normal_d = R_c2d @ normal_c
+                        point_d = (R_c2d @ point_c.reshape(3,1) + T_c2d_m).flatten()
+                        a, b, c = normal_d
+                        d = -np.dot(normal_d, point_d)
+                        print(f"Plane Normal (Depth): [{a:.3f}, {b:.3f}, {c:.3f}]")
+                        print(f"Plane D (Depth): {d:.3f}")
+                        calib_data = {
+                            "desk_plane": [float(a), float(b), float(c), float(d)],
+                            "plane_equation": [float(a), float(b), float(c), float(d)],
+                            "square_size_m": SQUARE_LENGTH,
+                            "marker_length_m": MARKER_LENGTH,
+                            "type": "charuco_color_aligned",
+                            "extrinsics_R": R_c2d.tolist(),
+                            "extrinsics_T": T_c2d_m.tolist()
+                        }
+                        with open(OUTPUT_FILE, 'w') as f:
+                            json.dump(calib_data, f, indent=4)
+                        print(f"Saved to {os.path.abspath(OUTPUT_FILE)}")
+                        cv2.putText(vis_img, "SAVED!", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                        cv2.imshow("Desk Calibration (Color)", vis_img)
+                        cv2.waitKey(1000)
+                        break
 
                     else:
                         print("SolvePnP Failed.")
                 else:
                     print("Not enough corners detected.")
 
-    except KeyboardInterrupt:
-        pass
-    finally:
-        cam.close()
-        cv2.destroyAllWindows()
+    cam.close()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()

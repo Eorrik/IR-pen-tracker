@@ -369,23 +369,19 @@ def main():
     desk_plane = None # [a, b, c, d]
     desk_y_manual = 0.2 # Fallback
     
-    # Try to load calibration
+    # Load calibration
     calib_file = "desk_calibration.json"
     if os.path.exists(calib_file):
-        try:
-            with open(calib_file, 'r') as f:
-                calib = json.load(f)
-                if "plane_equation" in calib:
-                    desk_plane = np.array(calib["plane_equation"])
-                    print(f"Loaded Desk Calibration: {desk_plane}")
-        except Exception as e:
-            print(f"Failed to load calibration: {e}")
+        with open(calib_file, 'r') as f:
+            calib = json.load(f)
+            if "plane_equation" in calib:
+                desk_plane = np.array(calib["plane_equation"])
+                print(f"Loaded Desk Calibration: {desk_plane}")
 
-    try:
-        while True:
-            frame = cam.read_frame()
-            if frame is None:
-                continue
+    while True:
+        frame = cam.read_frame()
+        if frame is None:
+            continue
 
             # Track
             result, debug_info = tracker.track_debug(frame)
@@ -728,12 +724,12 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
-            elif key == ord('w'): # Move Desk Up (Lower Y)
+            elif key == ord('w'):
                 if desk_plane is None:
-                    desk_y_manual -= 0.005 # 5mm
+                    desk_y_manual -= 0.005
                 else:
-                    desk_plane[3] -= 0.001 # Fine tune D
-            elif key == ord('s'): # Move Desk Down (Higher Y)
+                    desk_plane[3] -= 0.001
+            elif key == ord('s'):
                 if desk_plane is None:
                     desk_y_manual += 0.005
                 else:
@@ -741,12 +737,8 @@ def main():
             elif key == ord('c'):
                 desk_plane = None
                 print("Calibration cleared. Using manual Y.")
-
-    except KeyboardInterrupt:
-        pass
-    finally:
-        cam.close()
-        cv2.destroyAllWindows()
+    cam.close()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()

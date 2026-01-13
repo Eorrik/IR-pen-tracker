@@ -53,6 +53,7 @@ class KinectPenApp:
         self.desk_plane_depth = None # Final loaded/calibrated plane
         self.R_w = None # World Rotation
         self.origin_w = None # World Origin
+        self.lowest_marker_to_tip_m = float(self.config.get("pen", {}).get("lowest_marker_to_tip_m", 0.13))
         
     def on_mouse(self, event, x, y, flags, param):
         if event == cv2.EVENT_MOUSEMOVE:
@@ -70,10 +71,6 @@ class KinectPenApp:
     @staticmethod
     def project_point(p3d, intrinsics, dist_coeffs=None, scale=1.0):
         # p3d: (N, 3) or (3,)
-        if p3d.ndim == 1:
-            p3d = p3d.reshape(1, 1, 3)
-        else:
-            p3d = p3d.reshape(-1, 1, 3)
             
         fx, fy, cx, cy = [float(x) for x in intrinsics.tolist()]
         
@@ -85,19 +82,18 @@ class KinectPenApp:
         # if distortion is non-trivial.
         # So: Project with original intrinsics -> Scale output UV.
         
-        camera_matrix = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
-        
-        # Project
-        # rvec, tvec are 0 because p3d is already in camera frame
-        points_2d, _ = cv2.projectPoints(p3d, np.zeros(3), np.zeros(3), camera_matrix, dist_coeffs)
-        
-        points_2d = points_2d.reshape(-1, 2)
+        x, y, z = float(p3d[0]), float(p3d[1]), float(p3d[2])
+        if z <= 0:
+            return None
+        u = int(x * fx / z + cx)
+        v = int(y * fy / z + cy)
         
         # Apply scale to the resulting coordinates
         if scale != 1.0:
-            points_2d *= scale
+            u *= scale
+            v *= scale
             
-        return (int(points_2d[0][0]), int(points_2d[0][1]))
+        return (int(u), int(v))
 
     @staticmethod
     def transform_point(p_source, extrinsics):
@@ -144,35 +140,26 @@ class KinectPenApp:
 
     def initialize_camera(self):
         print("Initializing Camera...")
-        try:
-            if self.camera_type == "realsense":
-                from ir_pen_tracker.io.realsense_camera import RealSenseCamera
-                rs_cfg = self.config.get("camera", {}).get("realsense", {})
-                use_max = bool(rs_cfg.get("use_max_resolution", True))
-                fps = int(rs_cfg.get("fps", 30))
-                enable_ir = bool(rs_cfg.get("enable_ir", True))
-                preset = str(rs_cfg.get("preset", "high_accuracy")).lower()
-                if use_max:
-                    # Typical maximums: depth/IR 1280x720, color 1920x1080 (to keep IR aligned with depth)
-                    self.cam = RealSenseCamera(depth_width=1280, depth_height=720,
-                                               color_width=1920, color_height=1080,
-                                               fps=fps, enable_ir=enable_ir, preset=preset)
-                else:
-                    self.cam = RealSenseCamera(fps=fps, enable_ir=enable_ir, preset=preset)
-            else:
-                self.cam = KinectCamera(
-                    use_raw_color=True,
-                    color_resolution=pyk4a.ColorResolution.RES_1080P,
-                    camera_fps=pyk4a.FPS.FPS_30,
-                    depth_mode=pyk4a.DepthMode.NFOV_UNBINNED
-                )
-            if not self.cam.open():
-                print("Failed to open camera.")
-                return False
-            return True
-        except Exception as e:
-            print(f"Camera init failed: {e}")
-            return False
+        if self.camera_type == "realsense":
+            from ir_pen_tracker.io.realsense_camera import RealSenseCamera
+            rs_cfg = self.config.get("camera", {}).get("realsense", {})
+            fps = int(rs_cfg.get("fps", 30))
+            enable_ir = bool(rs_cfg.get("enable_ir", True))
+            preset = str(rs_cfg.get("preset", "high_accuracy")).lower()
+            laser_power = rs_cfg.get("laser_power", None)
+            exposure = rs_cfg.get("exposure", None)
+            self.cam = RealSenseCamera(depth_width=1280, depth_height=720,
+                                           color_width=1920, color_height=1080,
+                                           fps=fps, enable_ir=enable_ir, preset=preset,
+                                           laser_power=laser_power, exposure=exposure)
+        else:
+            self.cam = KinectCamera(
+                use_raw_color=True,
+                color_resolution=pyk4a.ColorResolution.RES_1080P,
+                camera_fps=pyk4a.FPS.FPS_30,
+                depth_mode=pyk4a.DepthMode.NFOV_UNBINNED
+            )
+        self.cam.open()
 
     def start_recording(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -249,9 +236,7 @@ class KinectPenApp:
         self.rec_frame_idx += 1
 
     def run(self):
-        if not self.initialize_camera():
-            return
-
+        self.initialize_camera()
         pen_cfg = IRPenConfig.from_dict(self.config.get("pen", {}))
         self.tracker = IRPenTracker(pen_cfg)
         
@@ -284,40 +269,35 @@ class KinectPenApp:
         cv2.namedWindow("Kinect Pen App", cv2.WINDOW_NORMAL)
         cv2.setMouseCallback("Kinect Pen App", self.on_mouse)
         
-        try:
-            while True:
-                frame = self.cam.read_frame()
-                if frame is None:
-                    continue
-                
-                vis_img = None
-                
+        while True:
+            frame = self.cam.read_frame()
+            if frame is None:
+                continue
+            
+            vis_img = None
+            
+            if self.state == "CALIBRATE":
+                vis_img = self.process_calibration(frame)
+            elif self.state == "MAIN":
+                vis_img = self.process_main(frame)
+            
+            if vis_img is not None:
+                cv2.imshow("Kinect Pen App", vis_img)
+            
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == 32: # Space
                 if self.state == "CALIBRATE":
-                    vis_img = self.process_calibration(frame)
+                    self.confirm_calibration()
                 elif self.state == "MAIN":
-                    vis_img = self.process_main(frame)
-                
-                if vis_img is not None:
-                    cv2.imshow("Kinect Pen App", vis_img)
-                
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    break
-                elif key == 32: # Space
-                    if self.state == "CALIBRATE":
-                        self.confirm_calibration()
-                    elif self.state == "MAIN":
-                        if self.is_recording:
-                            self.stop_recording()
-                        else:
-                            self.start_recording()
-                            
-        except KeyboardInterrupt:
-            pass
-        finally:
-            self.stop_recording()
-            self.cam.close()
-            cv2.destroyAllWindows()
+                    if self.is_recording:
+                        self.stop_recording()
+                    else:
+                        self.start_recording()
+        self.stop_recording()
+        self.cam.close()
+        cv2.destroyAllWindows()
 
     def process_calibration(self, frame):
         if frame.color is None:
@@ -455,14 +435,8 @@ class KinectPenApp:
             
             # Calculate derived points (in Depth Frame)
             # Tail
-            if result.tail_pos_cam is not None:
-                tail_d = result.tail_pos_cam
-            else:
-                tail_d = tip_d + direction_d * 0.1 # 10cm tail fallback
-            
-            # Real Tip (Rigid)
-            LOWEST_MARKER_TO_TIP = 0.13
-            real_tip_d = tip_d - direction_d * LOWEST_MARKER_TO_TIP
+            tail_d = result.tail_pos_cam
+            real_tip_d = tip_d - direction_d * float(self.lowest_marker_to_tip_m)
             
             # Corrected Tip
             corrected_tip_d = real_tip_d.copy()
@@ -495,56 +469,52 @@ class KinectPenApp:
             def to_cam_uv(p_d_m):
                 if p_d_m is None:
                     return None
-                try:
-                    if self.camera_type == "kinect" and hasattr(self.cam, "_cam") and hasattr(self.cam._cam, "calibration"):
-                        calib = self.cam._cam.calibration
-                        p_d_mm = p_d_m * 1000.0
-                        uv_depth = calib.convert_3d_to_2d(
-                            p_d_mm,
-                            pyk4a.CalibrationType.DEPTH,
-                            pyk4a.CalibrationType.DEPTH
-                        )
-                        p_c_mm = calib.convert_2d_to_3d(
-                            uv_depth,
-                            p_d_mm[2],
-                            pyk4a.CalibrationType.DEPTH,
-                            pyk4a.CalibrationType.COLOR
-                        )
-                        uv_color = calib.convert_3d_to_2d(
-                            p_c_mm,
-                            pyk4a.CalibrationType.COLOR,
-                            pyk4a.CalibrationType.COLOR
-                        )
-                        return (int(uv_color[0] * 0.5), int(uv_color[1] * 0.5))
-                    else:
-                        calib_data = self.cam.get_calibration_data()
-                        color_intr = calib_data.get("color_intrinsics")
-                        extr_d2c = calib_data.get("extrinsics_depth_to_color")
-                        if extr_d2c is None:
-                            ec2d = calib_data.get("extrinsics_color_to_depth")
-                            if ec2d is None:
-                                return None
-                            R = np.array(ec2d["R"])
-                            t_mm = np.array(ec2d["t"]).flatten()
-                            R_inv = R.T
-                            t_inv_mm = -R_inv @ t_mm
-                            extr_d2c = {"R": R_inv.tolist(), "t": t_inv_mm.tolist()}
-                        Rdc = np.array(extr_d2c["R"])
-                        tdc_m = np.array(extr_d2c["t"]).flatten() / 1000.0
-                        pc_m = Rdc @ p_d_m + tdc_m
-                        fx, fy, cx, cy = [float(x) for x in np.array(color_intr).tolist()]
-                        z = float(pc_m[2])
-                        if abs(z) < 1e-6:
+                if self.camera_type == "kinect" and hasattr(self.cam, "_cam") and hasattr(self.cam._cam, "calibration"):
+                    calib = self.cam._cam.calibration
+                    p_d_mm = p_d_m * 1000.0
+                    uv_depth = calib.convert_3d_to_2d(
+                        p_d_mm,
+                        pyk4a.CalibrationType.DEPTH,
+                        pyk4a.CalibrationType.DEPTH
+                    )
+                    p_c_mm = calib.convert_2d_to_3d(
+                        uv_depth,
+                        p_d_mm[2],
+                        pyk4a.CalibrationType.DEPTH,
+                        pyk4a.CalibrationType.COLOR
+                    )
+                    uv_color = calib.convert_3d_to_2d(
+                        p_c_mm,
+                        pyk4a.CalibrationType.COLOR,
+                        pyk4a.CalibrationType.COLOR
+                    )
+                    return (int(uv_color[0] * 0.5), int(uv_color[1] * 0.5))
+                else:
+                    calib_data = self.cam.get_calibration_data()
+                    color_intr = calib_data.get("color_intrinsics")
+                    extr_d2c = calib_data.get("extrinsics_depth_to_color")
+                    if extr_d2c is None:
+                        ec2d = calib_data.get("extrinsics_color_to_depth")
+                        if ec2d is None:
                             return None
-                        u = fx * pc_m[0] / z + cx
-                        v = fy * pc_m[1] / z + cy
-                        h0, w0 = frame.color.shape[:2] if frame.color is not None else (1080, 1920)
-                        ud = int(u * 960 / w0)
-                        vd = int(v * 540 / h0)
-                        return (ud, vd)
-                except Exception as e:
-                    print(f"DEBUG: Projection failed for {p_d_m}: {e}")
-                    return None
+                        R = np.array(ec2d["R"])
+                        t_mm = np.array(ec2d["t"]).flatten()
+                        R_inv = R.T
+                        t_inv_mm = -R_inv @ t_mm
+                        extr_d2c = {"R": R_inv.tolist(), "t": t_inv_mm.tolist()}
+                    Rdc = np.array(extr_d2c["R"])
+                    tdc_m = np.array(extr_d2c["t"]).flatten() / 1000.0
+                    pc_m = Rdc @ p_d_m + tdc_m
+                    fx, fy, cx, cy = [float(x) for x in np.array(color_intr).tolist()]
+                    z = float(pc_m[2])
+                    if abs(z) < 1e-6:
+                        return None
+                    u = fx * pc_m[0] / z + cx
+                    v = fy * pc_m[1] / z + cy
+                    h0, w0 = frame.color.shape[:2] if frame.color is not None else (1080, 1920)
+                    ud = int(u * 960 / w0)
+                    vd = int(v * 540 / h0)
+                    return (ud, vd)
 
             uv_tip = to_cam_uv(tip_d)
             if uv_tip is None:
@@ -555,44 +525,46 @@ class KinectPenApp:
             uv_corr = to_cam_uv(corrected_tip_d)
             
             if uv_tip and uv_tail:
-                cv2.line(cam_view, uv_tip, uv_tail, (0, 255, 255), 2) # Yellow Axis
-                cv2.circle(cam_view, uv_tip, 5, (0, 0, 255), -1) # Red Tip Marker
-                cv2.circle(cam_view, uv_tail, 5, (255, 0, 0), -1) # Blue Tail Marker
+                cv2.line(cam_view, uv_tip, uv_tail, (0, 255, 255), 1) # Yellow Axis
+                cv2.circle(cam_view, uv_tip, 1, (0, 0, 255), -1) # Red Tip Marker
+                cv2.circle(cam_view, uv_tail, 1, (255, 0, 0), -1) # Blue Tail Marker
                 
                 if uv_real:
                     cv2.line(cam_view, uv_tip, uv_real, (200, 200, 200), 1)
-                    cv2.circle(cam_view, uv_real, 4, (255, 255, 255), -1) # White Real Tip
+                    cv2.circle(cam_view, uv_real, 1, (255, 255, 255), -1) # White Real Tip
                 
                 if is_touching and uv_corr:
-                    cv2.circle(cam_view, uv_corr, 6, (255, 0, 255), -1)
+                    cv2.circle(cam_view, uv_corr, 1, (255, 0, 255), -1)
                     cv2.putText(cam_view, f"{compression_mm:.1f}mm", (uv_corr[0]+10, uv_corr[1]), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
                 elif uv_corr:
-                    cv2.circle(cam_view, uv_corr, 4, (0, 255, 255), -1) # Cyan Hover
-            if depth_intrinsics is not None:
-                scale_d = d_h / 576.0 # Assuming NFOV Unbinned 640x576
-
-                def to_depth_uv(p_d):
-                    # Direct projection (points are already in depth frame)
-                    return self.project_point(p_d, depth_intrinsics, scale=scale_d)
-                
-                uv_tip_d = to_depth_uv(tip_d)
-                uv_tail_d = to_depth_uv(tail_d)
-                uv_real_d = to_depth_uv(real_tip_d)
-                uv_corr_d = to_depth_uv(corrected_tip_d)
-                
-                if uv_tip_d and uv_tail_d:
-                    cv2.line(ir_view, uv_tip_d, uv_tail_d, (0, 255, 255), 2)
-                    cv2.circle(ir_view, uv_tip_d, 5, (0, 0, 255), -1)
-                    cv2.circle(ir_view, uv_tail_d, 5, (255, 0, 0), -1)
-                    
-                    if uv_real_d:
-                        cv2.line(ir_view, uv_tip_d, uv_real_d, (200, 200, 200), 1)
-                        cv2.circle(ir_view, uv_real_d, 4, (255, 255, 255), -1)
-                        
-                    if uv_corr_d:
+                    cv2.circle(cam_view, uv_corr, 1, (0, 255, 255), -1) # Cyan Hover
+            if frame.ir is not None and frame.ir_main_intrinsics is not None:
+                ir_h, ir_w = frame.ir.shape[:2]
+                sx = d_w / float(ir_w)
+                sy = d_h / float(ir_h)
+                fx_i, fy_i, cx_i, cy_i = [float(x) for x in frame.ir_main_intrinsics.tolist()]
+                def to_ir_uv(p_m):
+                    z = float(p_m[2])
+                    if z <= 0:
+                        return None
+                    u = fx_i * float(p_m[0]) / z + cx_i
+                    v = fy_i * float(p_m[1]) / z + cy_i
+                    return (int(round(u * sx)), int(round(v * sy)))
+                uv_tip_i = to_ir_uv(tip_d)
+                uv_tail_i = to_ir_uv(tail_d)
+                uv_real_i = to_ir_uv(real_tip_d)
+                uv_corr_i = to_ir_uv(corrected_tip_d)
+                if uv_tip_i and uv_tail_i:
+                    cv2.line(ir_view, uv_tip_i, uv_tail_i, (0, 255, 255), 1)
+                    cv2.circle(ir_view, uv_tip_i, 1, (0, 0, 255), -1)
+                    cv2.circle(ir_view, uv_tail_i, 1, (255, 0, 0), -1)
+                    if uv_real_i:
+                        cv2.line(ir_view, uv_tip_i, uv_real_i, (200, 200, 200), 1)
+                        cv2.circle(ir_view, uv_real_i, 1, (255, 255, 255), -1)
+                    if uv_corr_i:
                         color_corr = (255, 0, 255) if is_touching else (0, 255, 255)
-                        cv2.circle(ir_view, uv_corr_d, 5, color_corr, -1)
+                        cv2.circle(ir_view, uv_corr_i, 1, color_corr, -1)
 
         # Record
         self.record_frame(frame, result)

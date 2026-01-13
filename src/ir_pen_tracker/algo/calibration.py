@@ -10,14 +10,11 @@ class DeskCalibration:
 
     def load(self):
         if os.path.exists(self.calibration_file):
-            try:
-                with open(self.calibration_file, 'r') as f:
-                    data = json.load(f)
-                    self.plane_equation = np.array(data["desk_plane"])
-                    print(f"Loaded desk calibration: {self.plane_equation}")
-                    return True
-            except Exception as e:
-                print(f"Error loading calibration: {e}")
+            with open(self.calibration_file, 'r') as f:
+                data = json.load(f)
+                self.plane_equation = np.array(data["desk_plane"])
+                print(f"Loaded desk calibration: {self.plane_equation}")
+                return True
         return False
 
     def save(self):
@@ -60,15 +57,8 @@ class DeskCalibration:
         dictionary = cv2.aruco.getPredefinedDictionary(dict_id)
         
         # Create Board with Version Compatibility
-        try:
-            # OpenCV 4.7+ API
-            # Size is (cols, rows)
-            board = cv2.aruco.CharucoBoard((cols, rows), square_len, marker_len, dictionary)
-            board.setLegacyPattern(True)
-        except AttributeError:
-            # OpenCV < 4.7 API
-            # Args are cols, rows
-            board = cv2.aruco.CharucoBoard_create(cols, rows, square_len, marker_len, dictionary)
+        board = cv2.aruco.CharucoBoard((cols, rows), square_len, marker_len, dictionary)
+        board.setLegacyPattern(True)
 
         # Use grayscale for detection and refinement
         if len(image.shape) == 3:
@@ -199,4 +189,3 @@ class DeskCalibration:
         R = np.vstack((x_w, y_w, z_w))
         
         return R, origin
-

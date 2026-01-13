@@ -8,15 +8,9 @@ def _exit(code: int, msg: Optional[str] = None):
     sys.exit(code)
 
 def main():
-    try:
-        from pyk4a import PyK4A, Config, ColorResolution, ImageFormat, FPS, DepthMode, connected_device_count
-    except Exception as e:
-        _exit(1, f"依赖未就绪或导入失败: {e}")
+    from pyk4a import PyK4A, Config, ColorResolution, ImageFormat, FPS, DepthMode, connected_device_count
 
-    try:
-        cnt = connected_device_count()
-    except Exception as e:
-        _exit(2, f"设备查询失败: {e}")
+    cnt = connected_device_count()
 
     if cnt == 0:
         _exit(2, "未检测到 Azure Kinect 设备")
@@ -31,10 +25,7 @@ def main():
 
     cam = PyK4A(cfg)
 
-    try:
-        cam.start()
-    except Exception as e:
-        _exit(3, f"设备启动失败: {e}")
+    cam.start()
 
     n = 10
     ok = 0
@@ -49,10 +40,7 @@ def main():
             t0 = t
         t_last = t
 
-    try:
-        cam.stop()
-    except Exception:
-        pass
+    cam.stop()
 
     elapsed = (t_last - t0) if (t_last and t0) else 0.0
     fps = (n - 1) / elapsed if elapsed > 0 else 0.0

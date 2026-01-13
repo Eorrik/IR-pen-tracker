@@ -9,8 +9,13 @@ class Frame:
     frame_id: int
     color: np.ndarray          # HxWx3 BGR (Raw Color if using calibration)
     depth: np.ndarray          # HxW uint16 (mm)
-    ir: Optional[np.ndarray]   # HxW uint16
     intrinsics: np.ndarray     # [fx, fy, cx, cy] (For the active camera - usually depth for tracking)
+    ir: Optional[np.ndarray] = None   # HxW uint16
+    ir_main: Optional[np.ndarray] = None
+    ir_aux: Optional[np.ndarray] = None
+    ir_main_intrinsics: Optional[np.ndarray] = None
+    ir_aux_intrinsics: Optional[np.ndarray] = None
+    stereo_baseline_m: Optional[float] = None
     
     # Optional calibration data for advanced users (e.g. Color to Depth mapping)
     color_intrinsics: Optional[np.ndarray] = None # [fx, fy, cx, cy]

@@ -7,14 +7,8 @@ print(f"Contents of {mp_dir}:")
 for item in os.listdir(mp_dir):
     print(f"  {item}")
 
-try:
-    import mediapipe.python
-    print("Successfully imported mediapipe.python")
-except ImportError as e:
-    print(f"Failed to import mediapipe.python: {e}")
+import mediapipe.python
+print("Successfully imported mediapipe.python")
 
-try:
-    import mediapipe.solutions
-    print("Successfully imported mediapipe.solutions")
-except ImportError as e:
-    print(f"Failed to import mediapipe.solutions: {e}")
+import mediapipe.solutions
+print("Successfully imported mediapipe.solutions")

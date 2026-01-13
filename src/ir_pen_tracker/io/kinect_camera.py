@@ -47,26 +47,17 @@ class KinectCamera(ICamera):
         self._intrinsics = np.array([mat[0, 0], mat[1, 1], mat[0, 2], mat[1, 2]], dtype=np.float32)
         
         # Always load Color Intrinsics and Extrinsics if available
-        try:
-            mat_c = calib.get_camera_matrix(pyk4a.CalibrationType.COLOR)
-            self._color_intrinsics = np.array([mat_c[0, 0], mat_c[1, 1], mat_c[0, 2], mat_c[1, 2]], dtype=np.float32)
-            
-            # Load Distortion Coefficients (k1, k2, p1, p2, k3, k4, k5, k6)
-            self._color_dist_coeffs = calib.get_distortion_coefficients(pyk4a.CalibrationType.COLOR)
-            
-            # Load Extrinsics: Color -> Depth
-            self._extrinsics_c2d = calib.get_extrinsic_parameters(
-                pyk4a.CalibrationType.COLOR, 
-                pyk4a.CalibrationType.DEPTH
-            )
-            
-            # Load Extrinsics: Depth -> Color
-            self._extrinsics_d2c = calib.get_extrinsic_parameters(
-                pyk4a.CalibrationType.DEPTH, 
-                pyk4a.CalibrationType.COLOR
-            )
-        except Exception as e:
-            print(f"Warning: Failed to load color intrinsics/extrinsics: {e}")
+        mat_c = calib.get_camera_matrix(pyk4a.CalibrationType.COLOR)
+        self._color_intrinsics = np.array([mat_c[0, 0], mat_c[1, 1], mat_c[0, 2], mat_c[1, 2]], dtype=np.float32)
+        self._color_dist_coeffs = calib.get_distortion_coefficients(pyk4a.CalibrationType.COLOR)
+        self._extrinsics_c2d = calib.get_extrinsic_parameters(
+            pyk4a.CalibrationType.COLOR, 
+            pyk4a.CalibrationType.DEPTH
+        )
+        self._extrinsics_d2c = calib.get_extrinsic_parameters(
+            pyk4a.CalibrationType.DEPTH, 
+            pyk4a.CalibrationType.COLOR
+        )
             
         self._frame_id = 0
         return True

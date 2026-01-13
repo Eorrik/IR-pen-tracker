@@ -47,11 +47,10 @@ def main():
     print("Hover over Color View to project to Depth View.")
     print("Press 'q' to quit.")
 
-    try:
-        while True:
-            capture = k4a.get_capture()
-            if capture.depth is None or capture.color is None:
-                continue
+    while True:
+        capture = k4a.get_capture()
+        if capture.depth is None or capture.color is None:
+            continue
 
             # 1. Get Raw Images
             raw_depth = capture.depth # (H_d, W_d) uint16 mm
@@ -88,34 +87,21 @@ def main():
                     z_mm = float(raw_depth[v_d, u_d])
                     
                     if z_mm > 0:
-                        try:
-                            # 1. Unproject Depth(u,v,z) -> 3D Color Frame (Directly)
-                            # calib.convert_2d_to_3d can transform to target camera
-                            calib = k4a.calibration
-                            
-                            point3d_color = calib.convert_2d_to_3d(
-                                (u_d, v_d),
-                                z_mm,
-                                pyk4a.CalibrationType.DEPTH,
-                                pyk4a.CalibrationType.COLOR
-                            )
-                            
-                            # 2. Project 3D Color Frame -> Color(u,v)
-                            uv_color = calib.convert_3d_to_2d(
-                                point3d_color,
-                                pyk4a.CalibrationType.COLOR,
-                                pyk4a.CalibrationType.COLOR
-                            )
-                            
-                            u_c, v_c = int(uv_color[0]), int(uv_color[1])
-                            
-                            # Draw projected point on Color
-                            cv2.drawMarker(raw_color_bgr, (u_c, v_c), (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
-                            cv2.putText(raw_color_bgr, f"Proj: {u_c},{v_c}", (u_c+10, v_c), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                            
-                        except Exception as e:
-                            # print(f"Projection error: {e}")
-                            pass
+                        calib = k4a.calibration
+                        point3d_color = calib.convert_2d_to_3d(
+                            (u_d, v_d),
+                            z_mm,
+                            pyk4a.CalibrationType.DEPTH,
+                            pyk4a.CalibrationType.COLOR
+                        )
+                        uv_color = calib.convert_3d_to_2d(
+                            point3d_color,
+                            pyk4a.CalibrationType.COLOR,
+                            pyk4a.CalibrationType.COLOR
+                        )
+                        u_c, v_c = int(uv_color[0]), int(uv_color[1])
+                        cv2.drawMarker(raw_color_bgr, (u_c, v_c), (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
+                        cv2.putText(raw_color_bgr, f"Proj: {u_c},{v_c}", (u_c+10, v_c), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
             # Case 2: Mouse on Color -> Project to Depth
             if mouse_color['active']:
@@ -130,32 +116,21 @@ def main():
                     z_mm = float(transformed_depth[v_c, u_c])
                     
                     if z_mm > 0:
-                        try:
-                            calib = k4a.calibration
-                            
-                            # 1. Unproject Color(u,v,z) -> 3D Depth Frame (Directly)
-                            point3d_depth = calib.convert_2d_to_3d(
-                                (u_c, v_c),
-                                z_mm,
-                                pyk4a.CalibrationType.COLOR,
-                                pyk4a.CalibrationType.DEPTH
-                            )
-                            
-                            # 2. Project 3D Depth Frame -> Depth(u,v)
-                            uv_depth = calib.convert_3d_to_2d(
-                                point3d_depth,
-                                pyk4a.CalibrationType.DEPTH,
-                                pyk4a.CalibrationType.DEPTH
-                            )
-                            
-                            u_d, v_d = int(uv_depth[0]), int(uv_depth[1])
-                            
-                            # Draw projected point on Depth
-                            cv2.drawMarker(d_vis_bgr, (u_d, v_d), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
-                            cv2.putText(d_vis_bgr, f"Proj: {u_d},{v_d}", (u_d+10, v_d), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-                            
-                        except Exception as e:
-                            pass
+                        calib = k4a.calibration
+                        point3d_depth = calib.convert_2d_to_3d(
+                            (u_c, v_c),
+                            z_mm,
+                            pyk4a.CalibrationType.COLOR,
+                            pyk4a.CalibrationType.DEPTH
+                        )
+                        uv_depth = calib.convert_3d_to_2d(
+                            point3d_depth,
+                            pyk4a.CalibrationType.DEPTH,
+                            pyk4a.CalibrationType.DEPTH
+                        )
+                        u_d, v_d = int(uv_depth[0]), int(uv_depth[1])
+                        cv2.drawMarker(d_vis_bgr, (u_d, v_d), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
+                        cv2.putText(d_vis_bgr, f"Proj: {u_d},{v_d}", (u_d+10, v_d), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
             # Display
             cv2.imshow("Raw Depth View", d_vis_bgr)
@@ -164,11 +139,8 @@ def main():
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
-    except KeyboardInterrupt:
-        pass
-    finally:
-        k4a.stop()
-        cv2.destroyAllWindows()
+    k4a.stop()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
