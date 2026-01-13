@@ -2,6 +2,7 @@ import os
 import time
 import json
 import cv2
+import numpy as np
 from datetime import datetime
 from PyQt5.QtCore import QObject, pyqtSignal
 
@@ -31,13 +32,8 @@ class RecordingManager(QObject):
         meta["desk_plane"] = desk_plane_depth.tolist() if desk_plane_depth is not None else None
         with open(os.path.join(self.rec_dir, "meta.json"), 'w') as f:
             json.dump(meta, f, indent=2)
-            
-        self.rec_out_color = cv2.VideoWriter(
-            os.path.join(self.rec_dir, "color.avi"),
-            cv2.VideoWriter_fourcc(*'MJPG'),
-            30.0,
-            (1920, 1080)
-        )
+
+        self.rec_out_color = None
         
         self.rec_file_pen = open(os.path.join(self.rec_dir, "pen_data.jsonl"), 'w')
         self.rec_frame_idx = 0
@@ -69,6 +65,15 @@ class RecordingManager(QObject):
             c_img = frame.color
             if len(c_img.shape) == 3 and c_img.shape[2] == 4:
                 c_img = cv2.cvtColor(c_img, cv2.COLOR_BGRA2BGR)
+            c_img = np.ascontiguousarray(c_img)
+            if self.rec_out_color is None:
+                h, w = c_img.shape[:2]
+                self.rec_out_color = cv2.VideoWriter(
+                    os.path.join(self.rec_dir, "color.avi"),
+                    cv2.VideoWriter_fourcc(*"MJPG"),
+                    30.0,
+                    (int(w), int(h)),
+                )
             self.rec_out_color.write(c_img)
             
         # 2. Raw Depth/IR

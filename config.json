@@ -30,6 +30,6 @@
     }
   },
   "debug": {
-    "skip_calibration": true
+    "skip_calibration": false
   }
 }
