@@ -3,6 +3,7 @@ import os
 import time
 import cv2
 import numpy as np
+import pyrealsense2 as rs
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 src_path = os.path.join(current_dir, "..", "src")
@@ -24,7 +25,7 @@ def main():
     exposure = rs_cfg.get("exposure", None)
     if use_max:
         cam = RealSenseCamera(depth_width=1280, depth_height=720,
-                              color_width=1920, color_height=1080,
+                              color_width=1280, color_height=720,
                               fps=fps, enable_ir=enable_ir, preset=preset,
                               laser_power=laser_power, exposure=exposure)
     else:
@@ -33,12 +34,27 @@ def main():
     ok = cam.open()
     if not ok:
         return
+    calib = cam.get_calibration_data()
+    color_dist_coeffs = np.array(calib.get("color_dist_coeffs"), dtype=np.float32) if calib.get("color_dist_coeffs") is not None else None
+    pipe_profile = cam._pipe.get_active_profile()
+    color_sp = pipe_profile.get_stream(rs.stream.color).as_video_stream_profile()
+    color_intr_rs = color_sp.get_intrinsics()
+    ir_left_sp = pipe_profile.get_stream(rs.stream.infrared, 1).as_video_stream_profile()
+    ir_right_sp = pipe_profile.get_stream(rs.stream.infrared, 2).as_video_stream_profile()
+    ex_ir = ir_left_sp.get_extrinsics_to(ir_right_sp)
+    R_ir = np.array(ex_ir.rotation, dtype=np.float32).reshape(3, 3)
+    t_ir_m = np.array(ex_ir.translation, dtype=np.float32).reshape(3)
+    printed_once = False
+    depth_sp = pipe_profile.get_stream(rs.stream.depth).as_video_stream_profile()
+    ext_d2c = depth_sp.get_extrinsics_to(color_sp)
+    R_d2c = np.array(ext_d2c.rotation, dtype=np.float32).reshape(3, 3)
+    t_d2c_m = np.array(ext_d2c.translation, dtype=np.float32).reshape(3)
 
     cfg = IRPenStereoConfig()
     tracker = IRPenTrackerStereo(cfg)
 
     cv2.namedWindow("Stereo IR Pen Debug", cv2.WINDOW_NORMAL)
-
+    print(cam._extrinsics_c2d)
     n = 0
     while True:
         frame = cam.read_frame()
@@ -136,28 +152,48 @@ def main():
                 cv2.line(vis_left, a, b, (0, 255, 255), 1)
                 cv2.circle(vis_left, a, 1, (0, 0, 255), -1)
                 cv2.circle(vis_left, b, 1, (255, 0, 0), -1)
-            if frame.color_intrinsics is not None and frame.extrinsics_color_to_depth is not None:
-                R = np.array(frame.extrinsics_color_to_depth[0], dtype=np.float32)
-                t_mm = np.array(frame.extrinsics_color_to_depth[1], dtype=np.float32).reshape(3)
-                Rdc = R.T
-                tdc_m = -Rdc @ (t_mm / 1000.0)
-                fx_c, fy_c, cx_c, cy_c = [float(x) for x in frame.color_intrinsics.tolist()]
+                if frame.ir_aux_intrinsics is not None:
+                    fx_r, fy_r, cx_r, cy_r = [float(x) for x in frame.ir_aux_intrinsics.tolist()]
+                    def to_uv_right(p_m):
+                        pr = R_ir @ p_m + t_ir_m
+                        zr = float(pr[2])
+                        if zr <= 0:
+                            return None
+                        u = int(pr[0] * fx_r / zr + cx_r)
+                        v = int(pr[1] * fy_r / zr + cy_r)
+                        uu = int(round(u * sxR))
+                        vv = int(round(v * syR))
+                        return (uu, vv)
+                    uv_tip_r = to_uv_right(tip)
+                    uv_tail_r = to_uv_right(tail)
+                    if uv_tip_r and uv_tail_r:
+                        cv2.line(vis_right, uv_tip_r, uv_tail_r, (0, 255, 255), 1)
+                        cv2.circle(vis_right, uv_tip_r, 1, (0, 0, 255), -1)
+                        cv2.circle(vis_right, uv_tail_r, 1, (255, 0, 0), -1)
+            if frame.color_intrinsics is not None:
                 def to_uv_color(p_m):
                     z = float(p_m[2])
                     if z <= 0:
                         return None
-                    pc = Rdc @ p_m + tdc_m
+                    pc = R_d2c @ p_m + t_d2c_m
                     zc = float(pc[2])
                     if zc <= 0:
                         return None
-                    u = fx_c * pc[0] / zc + cx_c
-                    v = fy_c * pc[1] / zc + cy_c
+                    u, v = rs.rs2_project_point_to_pixel(color_intr_rs, [float(pc[0]), float(pc[1]), float(pc[2])])
                     uu = int(u * 960 / float(cw))
                     vv = int(v * 540 / float(ch))
                     return (uu, vv)
                 uv_tip_c = to_uv_color(tip) if tip is not None else None
                 uv_tail_c = to_uv_color(tail) if tail is not None else None
                 if uv_tip_c and uv_tail_c:
+                    if not printed_once and tip is not None and tail is not None:
+                        pc_tip = R_d2c @ tip + t_d2c_m
+                        pc_tail = R_d2c @ tail + t_d2c_m
+                        print("IR p3d tip:", tip)
+                        print("Color p3d tip:", pc_tip)
+                        print("IR p3d tail:", tail)
+                        print("Color p3d tail:", pc_tail)
+                        printed_once = True
                     cv2.line(color_disp, uv_tip_c, uv_tail_c, (0, 255, 255), 2)
                     cv2.circle(color_disp, uv_tip_c, 4, (0, 0, 255), -1)
                     cv2.circle(color_disp, uv_tail_c, 4, (255, 0, 0), -1)

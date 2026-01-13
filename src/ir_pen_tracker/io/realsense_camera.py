@@ -24,10 +24,13 @@ class RealSenseCamera(ICamera):
         self._color_intrinsics: Optional[np.ndarray] = None
         self._color_dist_coeffs: Optional[np.ndarray] = None
         self._extrinsics_c2d: Optional[tuple] = None
+        self._extrinsics_d2c: Optional[tuple] = None
         self._depth_scale_m: Optional[float] = None
         self._ir_left_intrinsics: Optional[np.ndarray] = None
         self._ir_right_intrinsics: Optional[np.ndarray] = None
         self._stereo_baseline_m: Optional[float] = None
+        self._extrinsics_ir_l2r: Optional[tuple] = None
+        self._extrinsics_ir_r2l: Optional[tuple] = None
         self._laser_power: Optional[float] = laser_power
         self._exposure: Optional[float] = exposure
 
@@ -67,6 +70,11 @@ class RealSenseCamera(ICamera):
         t_m = np.array(ex.translation, dtype=np.float32).reshape(3)
         t_mm = t_m * 1000.0
         self._extrinsics_c2d = (R, t_mm)
+        ex_d = depth_sp.get_extrinsics_to(color_sp)
+        R_d = np.array(ex_d.rotation, dtype=np.float32).reshape(3, 3)
+        t_d_m = np.array(ex_d.translation, dtype=np.float32).reshape(3)
+        t_d_mm = t_d_m * 1000.0
+        self._extrinsics_d2c = (R_d, t_d_mm)
         if self._enable_ir:
             ir_left_sp = pipe_profile.get_stream(rs.stream.infrared, 1).as_video_stream_profile()
             ir_right_sp = pipe_profile.get_stream(rs.stream.infrared, 2).as_video_stream_profile()
@@ -74,9 +82,17 @@ class RealSenseCamera(ICamera):
             intr_r = ir_right_sp.get_intrinsics()
             self._ir_left_intrinsics = np.array([float(intr_l.fx), float(intr_l.fy), float(intr_l.ppx), float(intr_l.ppy)], dtype=np.float32)
             self._ir_right_intrinsics = np.array([float(intr_r.fx), float(intr_r.fy), float(intr_r.ppx), float(intr_r.ppy)], dtype=np.float32)
-            ex_ir = ir_left_sp.get_extrinsics_to(ir_right_sp)
-            t_ir = np.array(ex_ir.translation, dtype=np.float32).reshape(3)
-            self._stereo_baseline_m = float(abs(t_ir[0]))
+            ex_l2r = ir_left_sp.get_extrinsics_to(ir_right_sp)
+            R_l2r = np.array(ex_l2r.rotation, dtype=np.float32).reshape(3, 3)
+            t_l2r_m = np.array(ex_l2r.translation, dtype=np.float32).reshape(3)
+            t_l2r_mm = t_l2r_m * 1000.0
+            self._extrinsics_ir_l2r = (R_l2r, t_l2r_mm)
+            ex_r2l = ir_right_sp.get_extrinsics_to(ir_left_sp)
+            R_r2l = np.array(ex_r2l.rotation, dtype=np.float32).reshape(3, 3)
+            t_r2l_m = np.array(ex_r2l.translation, dtype=np.float32).reshape(3)
+            t_r2l_mm = t_r2l_m * 1000.0
+            self._extrinsics_ir_r2l = (R_r2l, t_r2l_mm)
+            self._stereo_baseline_m = float(abs(t_l2r_m[0]))
         self._frame_id = 0
         return True
 
@@ -88,7 +104,19 @@ class RealSenseCamera(ICamera):
             "extrinsics_color_to_depth": {
                 "R": self._extrinsics_c2d[0].tolist(),
                 "t": self._extrinsics_c2d[1].tolist()
-            } if self._extrinsics_c2d else None
+            } if self._extrinsics_c2d else None,
+            "extrinsics_depth_to_color": {
+                "R": self._extrinsics_d2c[0].tolist(),
+                "t": self._extrinsics_d2c[1].tolist()
+            } if self._extrinsics_d2c else None,
+            "extrinsics_ir_left_to_right": {
+                "R": self._extrinsics_ir_l2r[0].tolist(),
+                "t": self._extrinsics_ir_l2r[1].tolist()
+            } if self._extrinsics_ir_l2r else None,
+            "extrinsics_ir_right_to_left": {
+                "R": self._extrinsics_ir_r2l[0].tolist(),
+                "t": self._extrinsics_ir_r2l[1].tolist()
+            } if self._extrinsics_ir_r2l else None
         }
 
     def read_frame(self) -> Optional[Frame]:
