@@ -11,7 +11,6 @@ def _ensure_src_on_path():
 def main():
     _ensure_src_on_path()
     from ir_pen_tracker.ui.main_window import MainWindow
-
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()

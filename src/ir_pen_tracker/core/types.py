@@ -30,6 +30,7 @@ class BrushPoseVis:
     quality: float
     has_lock: bool
     tail_pos_cam: Optional[np.ndarray] = None # [x, y, z] in meters
+    mask_left: Optional[np.ndarray] = None # HxW uint8
 
 @dataclass
 class BrushPose:

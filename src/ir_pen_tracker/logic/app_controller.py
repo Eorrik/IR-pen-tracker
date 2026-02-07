@@ -5,6 +5,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 from ir_pen_tracker.io.kinect_camera import KinectCamera
 from ir_pen_tracker.algo.pen_tracker import IRPenTracker, IRPenConfig
+from ir_pen_tracker.algo.stereo_pen_tracker import IRPenTrackerStereo, IRPenStereoConfig
 from ir_pen_tracker.algo.calibration import DeskCalibration
 from ir_pen_tracker.vis.ortho_vis import OrthoVisualizer
 from ir_pen_tracker.core.config_loader import load_config
@@ -34,7 +35,7 @@ class AppController(QThread):
         self.cam = None
         self.tracker = None
         self.calib = DeskCalibration()
-        self.ortho_vis = OrthoVisualizer()
+        self.ortho_vis = OrthoVisualizer(width=800, height=800, x_range=(-0.5, 0.5), y_range=(-0.5, 0.5), z_range=(0.0, 1.0))
         
         # Managers & Processors
         self.rec_manager = RecordingManager(project_root)
@@ -50,6 +51,16 @@ class AppController(QThread):
         self.desk_plane_depth = None
         self.R_w = None
         self.origin_w = None
+        self.board_R_d = None
+        self.board_origin_d = None
+        self._fps_cnt = 0
+        self._fps_last_ts = time.time()
+        self._perf_last_ts = time.time()
+        self._perf_read = 0.0
+        self._perf_track = 0.0
+        self._perf_record = 0.0
+        self._perf_vis = 0.0
+        self._perf_cnt = 0
         
     def handle_status_update(self, msg):
         self.status_update.emit(msg)
@@ -58,8 +69,8 @@ class AppController(QThread):
         self.status_update.emit("Initializing Camera...")
         self.initialize_camera()
         
-        pen_cfg = IRPenConfig.from_dict(self.config.get("pen", {}))
-        self.tracker = IRPenTracker(pen_cfg)
+        pen_cfg = IRPenStereoConfig.from_dict(self.config.get("pen", {}))
+        self.tracker = IRPenTrackerStereo(pen_cfg)
         
         # Init Processors
         self.calib_processor = CalibrationProcessor(self.calib, self.config)
@@ -71,10 +82,14 @@ class AppController(QThread):
         if self.debug_skip_calibration:
             if self.calib.load():
                 self.desk_plane_depth = self.calib.plane_equation
+                self.board_R_d = self.calib.board_rotation
+                self.board_origin_d = self.calib.board_origin
             self.state = "MAIN"
         else:
             if self.calib.load():
                 self.desk_plane_depth = self.calib.plane_equation
+                self.board_R_d = self.calib.board_rotation
+                self.board_origin_d = self.calib.board_origin
                 self.state = "MAIN"
                 self.status_update.emit("Calibration loaded. Ready.")
             else:
@@ -85,8 +100,9 @@ class AppController(QThread):
             self.update_world_transform()
 
     def update_world_transform(self):
-        self.R_w, self.origin_w = DeskCalibration.get_world_transform(self.desk_plane_depth)
+        self.R_w, self.origin_w = DeskCalibration.get_world_transform(self.desk_plane_depth, self.board_R_d, self.board_origin_d)
         self.track_processor.update_transform(self.desk_plane_depth, self.R_w, self.origin_w)
+        self.rec_manager.update_world_transform(self.R_w, self.origin_w)
 
     def initialize_camera(self):
         if self.camera_type == "realsense":
@@ -124,23 +140,52 @@ class AppController(QThread):
                 time.sleep(0.1)
                 continue
                 
+            t0 = time.time()
             frame = self.cam.read_frame()
+            t1 = time.time()
             if frame is None:
                 continue
+            now = time.time()
+            self._fps_cnt += 1
+            if now - self._fps_last_ts >= 1.0:
+                fps = self._fps_cnt / (now - self._fps_last_ts)
+                self.status_update.emit(f"Input FPS: {fps:.2f}")
+                self._fps_cnt = 0
+                self._fps_last_ts = now
             
             output_frames = {}
             
             if self.state == "CALIBRATE":
                 output_frames = self.calib_processor.process(frame)
             elif self.state == "MAIN":
+                self._perf_read += (t1 - t0)
                 tracker_result = self.tracker.track(frame)
+                t2 = time.time()
                 
                 # Recording
                 if self.rec_manager.is_recording:
                     self.rec_manager.record_frame(frame, tracker_result)
+                t3 = time.time()
                 
                 # Visualization
                 output_frames = self.track_processor.process(frame, tracker_result, self.cam)
+                t4 = time.time()
+                self._perf_track += (t2 - t1)
+                self._perf_record += (t3 - t2)
+                self._perf_vis += (t4 - t3)
+                self._perf_cnt += 1
+                if now - self._perf_last_ts >= 1.0 and self._perf_cnt > 0:
+                    r = (self._perf_read / self._perf_cnt) * 1000.0
+                    tr = (self._perf_track / self._perf_cnt) * 1000.0
+                    rec = (self._perf_record / self._perf_cnt) * 1000.0
+                    vis = (self._perf_vis / self._perf_cnt) * 1000.0
+                    self.status_update.emit(f"Perf avg(ms): read={r:.1f}, track={tr:.1f}, record={rec:.1f}, vis={vis:.1f}")
+                    self._perf_last_ts = now
+                    self._perf_read = 0.0
+                    self._perf_track = 0.0
+                    self._perf_record = 0.0
+                    self._perf_vis = 0.0
+                    self._perf_cnt = 0
             
             if output_frames:
                 self.frames_ready.emit(output_frames)
@@ -177,6 +222,7 @@ class AppController(QThread):
         # Let's fix this interaction. The processor detected the board and we need that info.
         
         detected_plane = self.calib_processor.desk_plane_color
+        pose_color = getattr(self.calib_processor, "board_pose_color", None)
         
         if detected_plane is not None:
             calib_data = self.cam.get_calibration_data()
@@ -185,6 +231,13 @@ class AppController(QThread):
             if extrinsics:
                 self.desk_plane_depth = self.calib.transform_plane_color_to_depth(detected_plane, extrinsics)
                 self.calib.plane_equation = self.desk_plane_depth
+                if pose_color is not None:
+                    rvec_c, tvec_c = pose_color
+                    R_d, origin_d = DeskCalibration.transform_pose_color_to_depth(rvec_c, tvec_c, extrinsics)
+                    self.board_R_d = R_d
+                    self.board_origin_d = origin_d
+                    self.calib.board_rotation = R_d
+                    self.calib.board_origin = origin_d
                 self.calib.save()
                 
                 self.update_world_transform()

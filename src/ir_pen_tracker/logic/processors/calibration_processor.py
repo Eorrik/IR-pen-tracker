@@ -6,6 +6,7 @@ class CalibrationProcessor:
         self.calib = calib
         self.config = config
         self.desk_plane_color = None
+        self.board_pose_color = None
 
     def process(self, frame):
         """
@@ -40,6 +41,7 @@ class CalibrationProcessor:
         if plane_cam is not None:
             rvec, tvec = pose
             self.desk_plane_color = plane_cam
+            self.board_pose_color = (rvec, tvec)
             status_text += " | Detected!"
             text_color = (0, 255, 0)
             

@@ -1,6 +1,7 @@
 import cv2
-from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QStatusBar, QSplitter
-from PyQt5.QtCore import Qt, pyqtSlot
+import threading
+from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QStatusBar, QSplitter, QProgressBar
+from PyQt5.QtCore import Qt, pyqtSlot, QTimer
 from PyQt5.QtGui import QImage, QPixmap
 
 from ir_pen_tracker.logic.app_controller import AppController
@@ -68,6 +69,9 @@ class MainWindow(QMainWindow):
         self.btn_record = QPushButton("Start Recording")
         self.btn_record.clicked.connect(self.on_record_clicked)
         controls_layout.addWidget(self.btn_record)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        controls_layout.addWidget(self.progress_bar)
         
         self.btn_calibrate = QPushButton("Calibrate")
         self.btn_calibrate.clicked.connect(self.on_calibrate_clicked)
@@ -82,11 +86,26 @@ class MainWindow(QMainWindow):
         # Status Bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+        self.lbl_fps = QLabel("FPS: -")
+        self.lbl_perf = QLabel("Perf: -")
+        self.status_bar.addPermanentWidget(self.lbl_fps)
+        self.status_bar.addPermanentWidget(self.lbl_perf)
         
         # Controller
         self.controller = AppController()
         self.controller.frames_ready.connect(self.update_frames)
         self.controller.status_update.connect(self.update_status)
+        self.controller.rec_manager.saving_started.connect(self.on_save_started)
+        self.controller.rec_manager.saving_progress.connect(self.on_save_progress)
+        self.controller.rec_manager.saving_finished.connect(self.on_save_finished)
+        
+        # Render timer and shared frame buffer
+        self._frame_lock = threading.Lock()
+        self._latest_frames = None
+        self.render_timer = QTimer(self)
+        self.render_timer.setInterval(33)
+        self.render_timer.timeout.connect(self.on_render_tick)
+        self.render_timer.start()
         
         # Start
         self.controller.start()
@@ -97,15 +116,18 @@ class MainWindow(QMainWindow):
         
     @pyqtSlot(dict)
     def update_frames(self, frames):
-        # Update Color View
+        with self._frame_lock:
+            self._latest_frames = frames
+    
+    def on_render_tick(self):
+        with self._frame_lock:
+            frames = self._latest_frames
+        if not frames:
+            return
         if "color" in frames:
             self.display_image(frames["color"], self.color_label)
-            
-        # Update IR View
         if "ir" in frames:
             self.display_image(frames["ir"], self.ir_label)
-             
-        # Update Ortho View
         if "ortho" in frames:
             self.display_image(frames["ortho"], self.ortho_label)
 
@@ -139,6 +161,12 @@ class MainWindow(QMainWindow):
         
     @pyqtSlot(str)
     def update_status(self, text):
+        if text.startswith("Input FPS:"):
+            self.lbl_fps.setText(text)
+            return
+        if text.startswith("Perf avg(ms):"):
+            self.lbl_perf.setText(text)
+            return
         self.status_bar.showMessage(text)
         
     def on_record_clicked(self):
@@ -156,6 +184,22 @@ class MainWindow(QMainWindow):
         else:
             self.btn_record.setText("Start Recording")
             self.btn_record.setStyleSheet("")
+    
+    @pyqtSlot(int)
+    def on_save_started(self, total):
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        self.btn_record.setEnabled(False)
+    
+    @pyqtSlot(int)
+    def on_save_progress(self, value):
+        self.progress_bar.setValue(value)
+    
+    @pyqtSlot()
+    def on_save_finished(self):
+        self.progress_bar.setVisible(False)
+        self.btn_record.setEnabled(True)
             
     def on_calibrate_clicked(self):
         self.controller.start_calibration()

@@ -18,6 +18,7 @@ class IRPenStereoConfig:
     kf_enabled: bool = True
     kf_process_var: float = 1e-2
     kf_measurement_var: float = 1e-4
+    smoothing_alpha: float = 0.0
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "IRPenStereoConfig":
@@ -69,9 +70,13 @@ class IRPenTrackerStereo(IBrushTracker):
     def __init__(self, config: IRPenStereoConfig = IRPenStereoConfig()):
         self._cfg = config
         self._last_tip: Optional[np.ndarray] = None
-        self._kf_state: Optional[np.ndarray] = None
-        self._kf_P: Optional[np.ndarray] = None
         self._last_ts: Optional[float] = None
+        self._kf_left_states: List[Optional[np.ndarray]] = [None, None]
+        self._kf_left_Ps: List[Optional[np.ndarray]] = [None, None]
+        self._kf_right_states: List[Optional[np.ndarray]] = [None, None]
+        self._kf_right_Ps: List[Optional[np.ndarray]] = [None, None]
+        self._ema_left: List[Optional[np.ndarray]] = [None, None]
+        self._ema_right: List[Optional[np.ndarray]] = [None, None]
 
     def track_debug(self, frame: Frame) -> Tuple[BrushPoseVis, Dict[str, Any]]:
         dbg: Dict[str, Any] = {
@@ -102,18 +107,93 @@ class IRPenTrackerStereo(IBrushTracker):
         blobsR = _weighted_centroids(maskR, irR, self._cfg.min_area, self._cfg.max_area)
         if len(blobsL) < 2 or len(blobsR) < 2:
             return BrushPoseVis(frame.timestamp, np.zeros(3), np.zeros(3), 0.0, False), dbg
-
+        #print("length:1"+str(len(blobsL))+" "+str(len(blobsR)))
         blobsL.sort(key=lambda t: t[1])
         blobsR.sort(key=lambda t: t[1])
         (uL1, vL1, _, _), (uL2, vL2, _, _) = blobsL[:2]
         (uR1, vR1, _, _), (uR2, vR2, _, _) = blobsR[:2]
 
+        left_uv = [(uL1, vL1), (uL2, vL2)]
+        right_uv = [(uR1, vR1), (uR2, vR2)]
+
+        dt = 1.0 / 30.0
+        if self._last_ts is not None:
+            dtt = float(frame.timestamp - self._last_ts)
+            if dtt > 1e-6:
+                dt = dtt
+
+        q = float(self._cfg.kf_process_var)
+        r = float(self._cfg.kf_measurement_var)
+        a = float(self._cfg.smoothing_alpha)
+
+        if self._cfg.kf_enabled:
+            F = np.array([
+                [1, 0, dt, 0],
+                [0, 1, 0, dt],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1]
+            ], dtype=np.float32)
+            H = np.array([
+                [1, 0, 0, 0],
+                [0, 1, 0, 0]
+            ], dtype=np.float32)
+            Q = np.diag([q, q, q, q]).astype(np.float32) * dt
+            R = np.diag([r, r]).astype(np.float32)
+
+            def kf_update(state_list, P_list, uv, idx):
+                u, v = float(uv[idx][0]), float(uv[idx][1])
+                x = state_list[idx]
+                P = P_list[idx]
+                if x is None or P is None:
+                    x = np.array([u, v, 0.0, 0.0], dtype=np.float32)
+                    P = np.eye(4, dtype=np.float32)
+                x = F @ x
+                P = F @ P @ F.T + Q
+                z = np.array([u, v], dtype=np.float32)
+                y = z - (H @ x)
+                S = H @ P @ H.T + R
+                K = P @ H.T @ np.linalg.inv(S)
+                x = x + (K @ y)
+                I4 = np.eye(4, dtype=np.float32)
+                P = (I4 - K @ H) @ P
+                state_list[idx] = x
+                P_list[idx] = P
+                return float(x[0]), float(x[1])
+
+            # Left camera KFs
+            uL1, vL1 = kf_update(self._kf_left_states, self._kf_left_Ps, left_uv, 0)
+            uL2, vL2 = kf_update(self._kf_left_states, self._kf_left_Ps, left_uv, 1)
+            # Right camera KFs
+            uR1, vR1 = kf_update(self._kf_right_states, self._kf_right_Ps, right_uv, 0)
+            uR2, vR2 = kf_update(self._kf_right_states, self._kf_right_Ps, right_uv, 1)
+
+        # EMA on 2D points
+        def ema_update(ema_list, uv, idx):
+            u, v = float(uv[idx][0]), float(uv[idx][1])
+            if a > 0.0:
+                e = ema_list[idx]
+                if e is None:
+                    e = np.array([u, v], dtype=np.float32)
+                else:
+                    e = (1.0 - a) * e + a * np.array([u, v], dtype=np.float32)
+                ema_list[idx] = e
+                return float(e[0]), float(e[1])
+            return u, v
+
+        uL1, vL1 = ema_update(self._ema_left, [(uL1, vL1), (uL2, vL2)], 0)
+        uL2, vL2 = ema_update(self._ema_left, [(uL1, vL1), (uL2, vL2)], 1)
+        uR1, vR1 = ema_update(self._ema_right, [(uR1, vR1), (uR2, vR2)], 0)
+        uR2, vR2 = ema_update(self._ema_right, [(uR1, vR1), (uR2, vR2)], 1)
+
+        # Update debug with smoothed UVs
+        dbg["left_uv"] = [(uL1, vL1), (uL2, vL2)]
+        dbg["right_uv"] = [(uR1, vR1), (uR2, vR2)]
+
+        # Pair after smoothing
         if abs(vL1 - vR1) + abs(vL2 - vR2) <= abs(vL1 - vR2) + abs(vL2 - vR1):
             pairs = [((uL1, vL1), (uR1, vR1)), ((uL2, vL2), (uR2, vR2))]
         else:
             pairs = [((uL1, vL1), (uR2, vR2)), ((uL2, vL2), (uR1, vR1))]
-        dbg["left_uv"] = [(uL1, vL1), (uL2, vL2)]
-        dbg["right_uv"] = [(uR1, vR1), (uR2, vR2)]
         dbg["matched_uv"] = pairs
 
         intrL = frame.ir_main_intrinsics if frame.ir_main_intrinsics is not None else frame.intrinsics
@@ -151,45 +231,7 @@ class IRPenTrackerStereo(IBrushTracker):
             if p2[1] > p1[1]:
                 tip, tail = p2, p1
 
-        if self._cfg.kf_enabled:
-            dt = 1.0 / 30.0
-            if self._last_ts is not None:
-                dtt = float(frame.timestamp - self._last_ts)
-                if dtt > 1e-6:
-                    dt = dtt
-            F = np.array([
-                [1, 0, 0, dt, 0, 0],
-                [0, 1, 0, 0, dt, 0],
-                [0, 0, 1, 0, 0, dt],
-                [0, 0, 0, 1, 0, 0],
-                [0, 0, 0, 0, 1, 0],
-                [0, 0, 0, 0, 0, 1]
-            ], dtype=np.float32)
-            H = np.array([
-                [1, 0, 0, 0, 0, 0],
-                [0, 1, 0, 0, 0, 0],
-                [0, 0, 1, 0, 0, 0]
-            ], dtype=np.float32)
-            q = float(self._cfg.kf_process_var)
-            r = float(self._cfg.kf_measurement_var)
-            Q = np.diag([q, q, q, q, q, q]).astype(np.float32) * dt
-            R = np.diag([r, r, r]).astype(np.float32)
-            if self._kf_state is None or self._kf_P is None:
-                self._kf_state = np.zeros(6, dtype=np.float32)
-                self._kf_state[:3] = tip.astype(np.float32)
-                self._kf_P = np.eye(6, dtype=np.float32) * 1.0
-            self._kf_state = F @ self._kf_state
-            self._kf_P = F @ self._kf_P @ F.T + Q
-            z_meas = tip.astype(np.float32)
-            y = z_meas - (H @ self._kf_state)
-            S = H @ self._kf_P @ H.T + R
-            K = self._kf_P @ H.T @ np.linalg.inv(S)
-            self._kf_state = self._kf_state + (K @ y)
-            I6 = np.eye(6, dtype=np.float32)
-            self._kf_P = (I6 - K @ H) @ self._kf_P
-            tip = self._kf_state[:3]
-            self._last_ts = float(frame.timestamp)
-
+        self._last_ts = float(frame.timestamp)
         self._last_tip = tip
         dbg["final_tip"] = tip
         dbg["final_tail"] = tail
@@ -205,7 +247,8 @@ class IRPenTrackerStereo(IBrushTracker):
             direction=dir_vec,
             quality=1.0,
             has_lock=True,
-            tail_pos_cam=tail
+            tail_pos_cam=tail,
+            mask_left = maskL
         )
         return res, dbg
 

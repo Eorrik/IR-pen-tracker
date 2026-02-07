@@ -40,8 +40,7 @@ class TrackingProcessor:
 
     def process(self, frame, tracker_result, cam_instance):
         cam_view = frame.color.copy()
-        ir_view = cv2.cvtColor(CVUtils.ir_to_vis(frame.ir), cv2.COLOR_GRAY2BGR)
-
+        ir_view = cv2.cvtColor(frame.ir, cv2.COLOR_GRAY2BGR)
         extr_d2c = cam_instance.get_calibration_data()["extrinsics_depth_to_color"]
         rs_color_intr = cam_instance.get_rs_color_intrinsics()
         rs_ir_intr = cam_instance.get_rs_ir_left_intrinsics()
@@ -51,32 +50,24 @@ class TrackingProcessor:
             direction_d = tracker_result.direction
             tail_d = tracker_result.tail_pos_cam
             real_tip_d = tip_d - direction_d * float(self.lowest_marker_to_tip_m)
-            
-            n = self.desk_plane_depth[:3]
-            d_param = self.desk_plane_depth[3]
-            dist_real = np.dot(n, real_tip_d) + d_param
-            is_touching = dist_real > 0
-            corrected_tip_d = real_tip_d
-            v = real_tip_d - tip_d
-            denom = np.dot(n, v)
-            dist_tip = np.dot(n, tip_d) + d_param
-            t = -dist_tip / denom
-            if is_touching:
-                corrected_tip_d = tip_d + t * v
-            compression_mm = np.linalg.norm(corrected_tip_d - real_tip_d) * 1000.0
+            maskL = tracker_result.mask_left
+            #draw red in ir view from tracker's result 
+            if maskL is not None:
+                red = (maskL > 0)
+                ir_view[red] = (0, 0, 255)
 
-            p_w = self.R_w @ (corrected_tip_d - self.origin_w)
-            self.ortho_vis.update(p_w[0], p_w[1], p_w[2], hover_height=p_w[1])
+            p_w = self.R_w @ (real_tip_d - self.origin_w)
+            p_w_tip = self.R_w @ (tip_d - self.origin_w)
+            p_w_tail = self.R_w @ (tail_d - self.origin_w)
+            self.ortho_vis.update(p_w[0], p_w[1], p_w[2], tail=p_w_tail, hover_height=p_w[2], mark1=p_w_tip, mark2=p_w_tail)
 
             tip_c = CVUtils.transform_point(tip_d, extr_d2c)
             tail_c = CVUtils.transform_point(tail_d, extr_d2c)
             real_tip_c = CVUtils.transform_point(real_tip_d, extr_d2c)
-            corrected_tip_c = CVUtils.transform_point(corrected_tip_d, extr_d2c)
 
-            corr_color = (255, 0, 255) if is_touching else (0, 255, 255)
-            self.draw_points_on_view(cam_view, rs_color_intr, tip_c, tail_c, real_tip_c, corrected_tip_c, corr_color)
-            self.draw_points_on_view(ir_view, rs_ir_intr, tip_d, tail_d, real_tip_d, corrected_tip_d, corr_color)
-            cv2.putText(cam_view, f"{compression_mm:.1f}mm", (50, 140), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 255), 2)
+            corr_color = (0, 255, 255)
+            self.draw_points_on_view(cam_view, rs_color_intr, tip_c, tail_c, real_tip_c, real_tip_c, corr_color)
+            self.draw_points_on_view(ir_view, rs_ir_intr, tip_d, tail_d, real_tip_d, real_tip_d, corr_color)
 
         if tracker_result.has_lock:
             cv2.putText(cam_view, "TRACKING", (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
@@ -85,8 +76,14 @@ class TrackingProcessor:
 
         ortho_img = self.ortho_vis.draw()
         
-        return {
+        out = {
             "color": cam_view,
             "ir": ir_view,
             "ortho": ortho_img
         }
+        if tracker_result.has_lock:
+            out["mark1"] = tip_d
+            out["mark2"] = tail_d
+            out["pred_tip_cam"] = real_tip_d
+            out["pred_tip_world"] = p_w
+        return out

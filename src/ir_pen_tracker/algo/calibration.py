@@ -7,12 +7,20 @@ class DeskCalibration:
     def __init__(self, calibration_file="desk_calibration.json"):
         self.calibration_file = calibration_file
         self.plane_equation = None # [a, b, c, d] in Depth Camera Coordinates
+        self.board_origin = None   # [x, y, z] in Depth Camera Coordinates (meters)
+        self.board_rotation = None # 3x3 rotation matrix: Board -> Depth Camera
 
     def load(self):
         if os.path.exists(self.calibration_file):
             with open(self.calibration_file, 'r') as f:
                 data = json.load(f)
                 self.plane_equation = np.array(data["desk_plane"])
+                bo = data.get("board_origin", None)
+                br = data.get("board_rotation", None)
+                if bo is not None:
+                    self.board_origin = np.array(bo, dtype=np.float32)
+                if br is not None:
+                    self.board_rotation = np.array(br, dtype=np.float32)
                 print(f"Loaded desk calibration: {self.plane_equation}")
                 return True
         return False
@@ -20,6 +28,10 @@ class DeskCalibration:
     def save(self):
         if self.plane_equation is not None:
             data = {"desk_plane": self.plane_equation.tolist()}
+            if self.board_origin is not None:
+                data["board_origin"] = self.board_origin.tolist()
+            if self.board_rotation is not None:
+                data["board_rotation"] = self.board_rotation.tolist()
             with open(self.calibration_file, 'w') as f:
                 json.dump(data, f, indent=4)
             print(f"Saved desk calibration to {self.calibration_file}")
@@ -75,34 +87,22 @@ class DeskCalibration:
                 valid, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(charuco_corners, charuco_ids, board, camera_matrix, dist_coeffs, None, None)
                 
                 if valid:
-                    # The board's Z-axis is usually normal to the board surface.
-                    # We want the plane equation for this surface.
-                    # Normal in board frame is (0, 0, 1)
-                    # Point on board is (0, 0, 0)
-                    
-                    # Transform to Camera Frame
                     R, _ = cv2.Rodrigues(rvec)
+                    cam_in_board = -R.T @ tvec.flatten()
+                    flip_x = cam_in_board[0] <= 0
+                    flip_z = cam_in_board[2] <= 0
+                    if flip_x:
+                        R[:, 0] = -R[:, 0]
+                    if flip_z:
+                        R[:, 2] = -R[:, 2]
+                    if (flip_x ^ flip_z):
+                        R[:, 1] = -R[:, 1]
+                    rvec_corr, _ = cv2.Rodrigues(R)
                     normal_cam = R @ np.array([0, 0, 1])
-                    point_cam = tvec.flatten() # Origin of board in camera frame
-                    
-                    # Plane: ax + by + cz + d = 0
-                    # d = - n . p
+                    point_cam = tvec.flatten()
                     d = -np.dot(normal_cam, point_cam)
-                    
                     plane = np.array([normal_cam[0], normal_cam[1], normal_cam[2], d])
-                    
-                    # Ensure normal points towards camera (d should be positive if camera is origin? 
-                    # distance from origin to plane along normal.
-                    # Usually we want normal to point 'up' from desk.
-                    # Camera is looking 'down' at desk.
-                    # If camera is at (0,0,0) and desk is at Z=1, normal (0,0,-1) -> -z + 1 = 0 -> z=1.
-                    # Let's standardize: Normal points towards camera (opposite to gravity roughly).
-                    # Camera Y is Down. Desk Normal should be Up (negative Y).
-                    
-                    if plane[1] > 0: # If Y component is positive (pointing down)
-                         plane = -plane
-                         
-                    return plane, (rvec, tvec), len(charuco_corners)
+                    return plane, (rvec_corr, tvec), len(charuco_corners)
                     
         return None, None, 0
 
@@ -138,17 +138,20 @@ class DeskCalibration:
         return plane_depth
 
     @staticmethod
-    def get_world_transform(desk_plane):
-        """
-        Compute transformation from Camera to World (Desk) Frame.
-        World Origin: Intersection of Camera Z-axis with Desk Plane.
-        World Y: Plane Normal (pointing UP, opposite to Camera Y).
-        World X: Camera X projected on Plane.
-        World Z: Forward on Plane (X cross Y).
-        
-        Returns: R_w (3x3), origin_w (3)
-        P_w = R_w @ (P_c - origin_w)
-        """
+    def transform_pose_color_to_depth(rvec_color, tvec_color, extrinsics_c2d):
+        R_c2d = np.array(extrinsics_c2d['R'])
+        t_c2d = np.array(extrinsics_c2d['t']).flatten() / 1000.0
+        R_color, _ = cv2.Rodrigues(rvec_color)
+        origin_depth = R_c2d @ tvec_color.flatten() + t_c2d
+        R_depth = R_c2d @ R_color
+        return R_depth, origin_depth
+
+    @staticmethod
+    def get_world_transform(desk_plane, board_rotation=None, board_origin=None):
+        if board_rotation is not None and board_origin is not None:
+            R_w = board_rotation.T
+            origin_w = board_origin
+            return R_w, origin_w
         if desk_plane is None:
             return None, None
             
@@ -165,27 +168,17 @@ class DeskCalibration:
         origin = np.array([0, 0, t])
         
         # 2. Compute Basis Vectors
-        # Y_W: Plane Normal.
-        # Check direction. Camera Y is Down (0,1,0). Normal usually points Down too (positive Y component).
-        # We want World Y to be UP (Height). So flip normal if it points Down.
-        if np.dot(n, np.array([0, 1, 0])) > 0:
-            y_w = -n
-        else:
-            y_w = n
-        y_w = y_w / np.linalg.norm(y_w)
+        z_w = n / np.linalg.norm(n)
         
-        # X_W: Project Camera X (1,0,0) onto Plane
         x_c = np.array([1, 0, 0])
-        x_w = x_c - np.dot(x_c, y_w) * y_w
+        x_w = x_c - np.dot(x_c, z_w) * z_w
         if np.linalg.norm(x_w) < 1e-6:
-            x_w = np.cross(np.array([0,1,0]), y_w)
+            x_w = np.cross(np.array([0,1,0]), z_w)
         x_w = x_w / np.linalg.norm(x_w)
         
-        # Z_W: x_w cross y_w
-        z_w = np.cross(x_w, y_w)
-        z_w = z_w / np.linalg.norm(z_w)
+        y_w = np.cross(z_w, x_w)
+        y_w = y_w / np.linalg.norm(y_w)
         
-        # Rotation Matrix (Rows are X_W, Y_W, Z_W)
         R = np.vstack((x_w, y_w, z_w))
         
         return R, origin

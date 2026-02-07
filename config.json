@@ -7,12 +7,12 @@
         "dictionary_id": "DICT_4X4_100"
     },
     "pen": {
-        "ir_threshold": 60000,
-        "min_area": 10,
+        "ir_threshold": 45000,
+        "min_area": 5,
         "max_area": 2000,
         "roi_scale": 0.5,
         "sample_margin": 0.2,
-        "pen_length_m": 0.15,
+        "lowest_marker_to_tip_m": 0.12,
         "length_tolerance_m": 0.05,
         "ransac_threshold": 0.005,
         "min_depth_m": 0.1,
@@ -25,8 +25,8 @@
       "use_max_resolution": true,
       "fps": 30,
       "enable_ir": true,
-      "laser_power": 360,
-      "exposure": 6000
+      "laser_power": 0,
+      "exposure": 2000
     }
   },
   "debug": {

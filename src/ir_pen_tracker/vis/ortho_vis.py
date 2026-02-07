@@ -19,15 +19,21 @@ class OrthoVisualizer:
         # Pen State
         self.current_tip = None
         self.current_tail = None
+        self.current_mark1 = None
+        self.current_mark2 = None
         self.current_hover_height = None
 
-    def update(self, x, y, z, tail=None, hover_height=None):
+    def update(self, x, y, z, tail=None, hover_height=None, mark1=None, mark2=None):
         self.history.append((x, y, z))
         self.current_tip = (x, y, z)
         self.current_tail = tail
         self.current_hover_height = hover_height
+        if mark1 is not None:
+            self.current_mark1 = mark1
+        if mark2 is not None:
+            self.current_mark2 = mark2
 
-    def _draw_grid_and_points(self, canvas, h_val_getter, v_val_getter, h_range, v_range, label, extra_draw_func=None):
+    def _draw_grid_and_points(self, canvas, h_val_getter, v_val_getter, h_range, v_range, label, extra_draw_func=None, anchor_bottom=False):
         """
         Generic drawer that maintains aspect ratio.
         h_range: (min, max) for horizontal axis
@@ -57,7 +63,10 @@ class OrthoVisualizer:
         
         def to_uv(h_val, v_val):
             u = int(cx + (h_val - h_mid) * scale)
-            v = int(cy - (v_val - v_mid) * scale) # Y-up (v-down)
+            if anchor_bottom:
+                v = int(ch - (v_val - v_range[0]) * scale)
+            else:
+                v = int(cy - (v_val - v_mid) * scale)
             return u, v
             
         # Draw Grid (0.1m steps)
@@ -109,7 +118,21 @@ class OrthoVisualizer:
              u_tail, v_tail = to_uv(tail_h, tail_v)
              
              cv2.line(canvas, (u_tip, v_tip), (u_tail, v_tail), (255, 255, 0), 2)
+             cv2.circle(canvas, (u_tip, v_tip), 5, (255, 0, 255), -1)  # predicted tip
 
+        # Draw current markers (mark1: tip marker, mark2: tail marker)
+        if self.current_mark1 is not None:
+            m1_h = h_val_getter(self.current_mark1)
+            m1_v = v_val_getter(self.current_mark1)
+            u1, v1 = to_uv(m1_h, m1_v)
+            cv2.circle(canvas, (u1, v1), 5, (0, 0, 255), -1)
+            cv2.putText(canvas, "mark1", (u1+6, v1-6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        if self.current_mark2 is not None:
+            m2_h = h_val_getter(self.current_mark2)
+            m2_v = v_val_getter(self.current_mark2)
+            u2, v2 = to_uv(m2_h, m2_v)
+            cv2.circle(canvas, (u2, v2), 5, (255, 0, 0), -1)
+            cv2.putText(canvas, "mark2", (u2+6, v2-6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
         # Allow extra drawing (e.g. Desk Plane)
         if extra_draw_func:
             extra_draw_func(canvas, to_uv)
@@ -118,41 +141,60 @@ class OrthoVisualizer:
         cv2.putText(canvas, f"{label} (Scale: {scale:.1f} px/m)", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
     def draw(self):
-        # 1. Top View (XZ in World)
-        # H: X, V: Z
-        # World X is Right, World Z is Forward (Up on screen)
-        
+        # 1. Top View (World XY)
+        # H: X, V: Y
         self._draw_grid_and_points(
-            self.canvas_top, 
+            self.canvas_top,
             lambda p: p[0], # X
-            lambda p: p[2], # Z
-            self.x_range, 
-            self.z_range, 
-            "Top View (World XZ)"
+            lambda p: p[1], # Y
+            self.x_range,
+            self.y_range,
+            "Top View (World XY)"
         )
+        y0 = 40
+        dy = 22
+        if self.current_mark1 is not None:
+            x, y, z = self.current_mark1
+            cv2.putText(self.canvas_top, f"mark1: x={x:.3f} y={y:.3f} z={z:.3f}", (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            y0 += dy
+        if self.current_mark2 is not None:
+            x, y, z = self.current_mark2
+            cv2.putText(self.canvas_top, f"mark2: x={x:.3f} y={y:.3f} z={z:.3f}", (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+            y0 += dy
+        if self.current_tip is not None:
+            x, y, z = self.current_tip
+            cv2.putText(self.canvas_top, f"pred:  x={x:.3f} y={y:.3f} z={z:.3f}", (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
         
-        # 2. Side View (ZY in World)
-        # H: Z (Forward), V: Y (Up)
-        # We want Z to go Right. Y to go Up.
-        # Screen Y is Down. So we map World Y to Screen -Y.
-        
-        def draw_desk(canvas, to_uv):
-            # Draw line at Y=0
-            # H range is Z range. V range is Y range.
-            # We want a line from (min_z, 0) to (max_z, 0)
-            u1, v1 = to_uv(self.z_range[0], 0)
-            u2, v2 = to_uv(self.z_range[1], 0)
+        # 2. Side View (World XZ)
+        # H: X, V: Z
+        def draw_board_line(canvas, to_uv):
+            # Draw line at Z=0 (board plane)
+            u1, v1 = to_uv(self.x_range[0], 0.0)
+            u2, v2 = to_uv(self.x_range[1], 0.0)
             cv2.line(canvas, (u1, v1), (u2, v2), (0, 0, 255), 2)
-            cv2.putText(canvas, "Desk", (u1+10, v1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            cv2.putText(canvas, "Board (Z=0)", (u1+10, v1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
         self._draw_grid_and_points(
             self.canvas_side,
-            lambda p: p[2], # Z (Horizontal)
-            lambda p: p[1], # Y (Vertical, Up)
+            lambda p: p[0], # X
+            lambda p: p[2], # Z
+            self.x_range,
             self.z_range,
-            self.y_range,
-            "Side View (World ZY)",
-            extra_draw_func=draw_desk
+            "Side View (World XZ)",
+            extra_draw_func=draw_board_line
+            , anchor_bottom=True
         )
+        y1 = 40
+        if self.current_mark1 is not None:
+            x, y, z = self.current_mark1
+            cv2.putText(self.canvas_side, f"mark1: x={x:.3f} y={y:.3f} z={z:.3f}", (10, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            y1 += dy
+        if self.current_mark2 is not None:
+            x, y, z = self.current_mark2
+            cv2.putText(self.canvas_side, f"mark2: x={x:.3f} y={y:.3f} z={z:.3f}", (10, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+            y1 += dy
+        if self.current_tip is not None:
+            x, y, z = self.current_tip
+            cv2.putText(self.canvas_side, f"pred:  x={x:.3f} y={y:.3f} z={z:.3f}", (10, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
         
         return np.vstack((self.canvas_top, self.canvas_side))

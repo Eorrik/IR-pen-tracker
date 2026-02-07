@@ -42,7 +42,7 @@ class RealSenseCamera(ICamera):
     def open(self) -> bool:
         self._pipe = rs.pipeline()
         self._cfg = rs.config()
-        self._cfg.enable_stream(rs.stream.depth, self._depth_w, self._depth_h, rs.format.z16, self._fps)
+        #self._cfg.enable_stream(rs.stream.depth, self._depth_w, self._depth_h, rs.format.z16, self._fps)
         self._cfg.enable_stream(rs.stream.color, self._color_w, self._color_h, rs.format.bgr8, self._fps)
         if self._enable_ir:
             self._cfg.enable_stream(rs.stream.infrared, 1, self._depth_w, self._depth_h, rs.format.y8, self._fps)
@@ -50,9 +50,10 @@ class RealSenseCamera(ICamera):
         profile = self._pipe.start(self._cfg)
         dev = profile.get_device()
         depth_sensor = dev.first_depth_sensor()
-        depth_sensor.set_option(rs.option.laser_power, float(cast(float, self._laser_power)))
-        print("Laser Power Status:")
-        print(depth_sensor.get_option(rs.option.laser_power))
+        if self._laser_power is not None:
+            depth_sensor.set_option(rs.option.laser_power, float(self._laser_power))
+            print("Laser Power Status:")
+            print(depth_sensor.get_option(rs.option.laser_power))
         if self._exposure is not None:
             depth_sensor.set_option(rs.option.enable_auto_exposure, 0)
             depth_sensor.set_option(rs.option.exposure, float(self._exposure))
@@ -63,25 +64,15 @@ class RealSenseCamera(ICamera):
 
     
         pipe_profile = self._pipe.get_active_profile()
-        depth_sp = pipe_profile.get_stream(rs.stream.depth).as_video_stream_profile()
+        # depth_sp = pipe_profile.get_stream(rs.stream.depth).as_video_stream_profile()  # 注释掉depth相关
         color_sp = pipe_profile.get_stream(rs.stream.color).as_video_stream_profile()
-        d_intr = depth_sp.get_intrinsics()
+        # d_intr = depth_sp.get_intrinsics()  # 注释掉depth相关
         c_intr = color_sp.get_intrinsics()
-        self._rs_depth_intrinsics = d_intr
+        # self._rs_depth_intrinsics = d_intr  # 注释掉depth相关
         self._rs_color_intrinsics = c_intr
-        self._intrinsics = np.array([float(d_intr.fx), float(d_intr.fy), float(d_intr.ppx), float(d_intr.ppy)], dtype=np.float32)
+        # self._intrinsics = np.array([float(d_intr.fx), float(d_intr.fy), float(d_intr.ppx), float(d_intr.ppy)], dtype=np.float32)  # 注释掉depth相关
         self._color_intrinsics = np.array([float(c_intr.fx), float(c_intr.fy), float(c_intr.ppx), float(c_intr.ppy)], dtype=np.float32)
         self._color_dist_coeffs = np.array(list(c_intr.coeffs), dtype=np.float32)
-        ex = color_sp.get_extrinsics_to(depth_sp)
-        R = np.array(ex.rotation, dtype=np.float32).reshape(3, 3)
-        t_m = np.array(ex.translation, dtype=np.float32).reshape(3)
-        t_mm = t_m * 1000.0
-        self._extrinsics_c2d = (R, t_mm)
-        ex_d = depth_sp.get_extrinsics_to(color_sp)
-        R_d = np.array(ex_d.rotation, dtype=np.float32).reshape(3, 3)
-        t_d_m = np.array(ex_d.translation, dtype=np.float32).reshape(3)
-        t_d_mm = t_d_m * 1000.0
-        self._extrinsics_d2c = (R_d, t_d_mm)
         if self._enable_ir:
             ir_left_sp = pipe_profile.get_stream(rs.stream.infrared, 1).as_video_stream_profile()
             ir_right_sp = pipe_profile.get_stream(rs.stream.infrared, 2).as_video_stream_profile()
@@ -91,6 +82,20 @@ class RealSenseCamera(ICamera):
             self._rs_ir_right_intrinsics = intr_r
             self._ir_left_intrinsics = np.array([float(intr_l.fx), float(intr_l.fy), float(intr_l.ppx), float(intr_l.ppy)], dtype=np.float32)
             self._ir_right_intrinsics = np.array([float(intr_r.fx), float(intr_r.fy), float(intr_r.ppx), float(intr_r.ppy)], dtype=np.float32)
+            # 将主intrinsics设置为IR左目，替代depth intrinsics
+            self._intrinsics = np.array([float(intr_l.fx), float(intr_l.fy), float(intr_l.ppx), float(intr_l.ppy)], dtype=np.float32)
+            # 计算IR左目 -> Color的外参，替代depth->color
+            ex_l2c = ir_left_sp.get_extrinsics_to(color_sp)
+            R_lc = np.array(ex_l2c.rotation, dtype=np.float32).reshape(3, 3)
+            t_lc_m = np.array(ex_l2c.translation, dtype=np.float32).reshape(3)
+            t_lc_mm = t_lc_m * 1000.0
+            self._extrinsics_d2c = (R_lc, t_lc_mm)
+            ex_c2l = color_sp.get_extrinsics_to(ir_left_sp)
+            R_cl = np.array(ex_c2l.rotation, dtype=np.float32).reshape(3, 3)
+            t_cl_m = np.array(ex_c2l.translation, dtype=np.float32).reshape(3)
+            t_cl_mm = t_cl_m * 1000.0
+            self._extrinsics_c2d = (R_cl, t_cl_mm)
+            # 仍保留左右IR外参与基线
             ex_l2r = ir_left_sp.get_extrinsics_to(ir_right_sp)
             R_l2r = np.array(ex_l2r.rotation, dtype=np.float32).reshape(3, 3)
             t_l2r_m = np.array(ex_l2r.translation, dtype=np.float32).reshape(3)
@@ -140,18 +145,18 @@ class RealSenseCamera(ICamera):
 
         frames = self._pipe.wait_for_frames()
         ts = time.time()
-        depth_frame = frames.get_depth_frame()
-        if depth_frame is None:
-            raise RuntimeError("failed to capture depth image")
+        # depth_frame = frames.get_depth_frame()  # 注释掉depth相关
+        # if depth_frame is None:
+        #     raise RuntimeError("failed to capture depth image")
         color_frame = frames.get_color_frame()
         ir_frame_left = None
         ir_frame_right = None
         if self._enable_ir:
             ir_frame_left = frames.get_infrared_frame(1)
             ir_frame_right = frames.get_infrared_frame(2)
-        depth = np.asanyarray(depth_frame.get_data())
-        if depth.dtype != np.uint16:
-            depth = depth.astype(np.uint16)
+        # depth = np.asanyarray(depth_frame.get_data())  # 注释掉depth相关
+        # if depth.dtype != np.uint16:
+        #     depth = depth.astype(np.uint16)
         color = None
         if color_frame is not None:
             color = np.asanyarray(color_frame.get_data())
@@ -179,7 +184,7 @@ class RealSenseCamera(ICamera):
             timestamp=ts,
             frame_id=self._frame_id,
             color=color,
-            depth=depth,
+            depth=None,
             intrinsics=self._intrinsics,
             ir=ir_left,
             ir_main=ir_left,
