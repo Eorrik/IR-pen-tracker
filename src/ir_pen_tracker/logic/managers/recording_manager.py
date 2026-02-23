@@ -34,6 +34,9 @@ class RecordingManager(QObject):
         self._bundle_total = 0
         self._R_w = None
         self._origin_w = None
+        self._vw_color = None
+        self._vw_ir = None
+        self._video_fps = 30
         
     def start(self, cam, desk_plane_depth):
         with self._lock:
@@ -41,8 +44,6 @@ class RecordingManager(QObject):
             self.rec_dir = os.path.join(self.project_root, "recordings", f"rec_{timestamp}")
             print(self.rec_dir)
             os.makedirs(self.rec_dir, exist_ok=True)
-            os.makedirs(os.path.join(self.rec_dir, "color"), exist_ok=True)
-            os.makedirs(os.path.join(self.rec_dir, "ir"), exist_ok=True)
             meta = cam.get_calibration_data()
             meta["desk_plane"] = desk_plane_depth.tolist() if desk_plane_depth is not None else None
             with open(os.path.join(self.rec_dir, "meta.json"), 'w') as f:
@@ -57,6 +58,8 @@ class RecordingManager(QObject):
             self._saving_mode = False
             self._saving_done = 0
             self._bundle_total = 0
+            self._vw_color = None
+            self._vw_ir = None
             self.is_recording = True
             self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
             self._writer_thread.start()
@@ -116,30 +119,37 @@ class RecordingManager(QObject):
                 self._last_debug_emit_ts = now
 
     def _writer_loop(self):
-        color_dir = os.path.join(self.rec_dir, "color")
-        ir_dir = os.path.join(self.rec_dir, "ir")
+        color_mp4 = os.path.join(self.rec_dir, "color.mp4")
+        ir_mp4 = os.path.join(self.rec_dir, "ir.mp4")
         while True:
             if self._writer_stop.is_set():
                 while not self._write_queue.empty():
                     task = self._write_queue.get_nowait()
                     kind = task[0]
                     if kind == "bundle":
-                        idx = int(task[1])
                         pen_entry = task[2]
                         c_img = task[3]
                         ir_img = task[4]
                         if c_img is not None:
                             if len(c_img.shape) == 3 and c_img.shape[2] == 4:
                                 c_img = cv2.cvtColor(c_img, cv2.COLOR_BGRA2BGR)
+                            if self._vw_color is None:
+                                h, w = c_img.shape[:2]
+                                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                                self._vw_color = cv2.VideoWriter(color_mp4, fourcc, float(self._video_fps), (w, h))
                             c_img = np.ascontiguousarray(c_img)
-                            cv2.imwrite(os.path.join(color_dir, f"{idx:06d}.png"), c_img)
+                            self._vw_color.write(c_img)
                             del c_img
-                            pass
                         if ir_img is not None:
-                            ir_img = np.ascontiguousarray(ir_img)
-                            cv2.imwrite(os.path.join(ir_dir, f"{idx:06d}.png"), ir_img)
+                            ir8 = (ir_img.astype(np.uint16) >> 8).astype(np.uint8)
+                            ir_bgr = cv2.cvtColor(ir8, cv2.COLOR_GRAY2BGR)
+                            if self._vw_ir is None:
+                                h_i, w_i = ir_bgr.shape[:2]
+                                fourcc_i = cv2.VideoWriter_fourcc(*"mp4v")
+                                self._vw_ir = cv2.VideoWriter(ir_mp4, fourcc_i, float(self._video_fps), (w_i, h_i))
+                            ir_bgr = np.ascontiguousarray(ir_bgr)
+                            self._vw_ir.write(ir_bgr)
                             del ir_img
-                            pass
                         if self.rec_file_pen is None:
                             self.rec_file_pen = open(os.path.join(self.rec_dir, "pen_data.jsonl"), 'a')
                         self.rec_file_pen.write(json.dumps(pen_entry) + "\n")
@@ -149,26 +159,33 @@ class RecordingManager(QObject):
                 if self._write_queue.empty():
                     break
             try:
-                #task = self._write_queue.get(timeout=0.1)
-                sleep(0.1)
-                continue
+                task = self._write_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
             kind = task[0]
             if kind == "bundle":
-                idx = int(task[1])
                 pen_entry = task[2]
                 c_img = task[3]
                 ir_img = task[4]
                 if c_img is not None:
                     if len(c_img.shape) == 3 and c_img.shape[2] == 4:
                         c_img = cv2.cvtColor(c_img, cv2.COLOR_BGRA2BGR)
+                    if self._vw_color is None:
+                        h, w = c_img.shape[:2]
+                        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                        self._vw_color = cv2.VideoWriter(color_mp4, fourcc, float(self._video_fps), (w, h))
                     c_img = np.ascontiguousarray(c_img)
-                    cv2.imwrite(os.path.join(color_dir, f"{idx:06d}.png"), c_img)
+                    self._vw_color.write(c_img)
                     del c_img
                 if ir_img is not None:
-                    ir_img = np.ascontiguousarray(ir_img)
-                    cv2.imwrite(os.path.join(ir_dir, f"{idx:06d}.png"), ir_img)
+                    ir8 = (ir_img.astype(np.uint16) >> 8).astype(np.uint8)
+                    ir_bgr = cv2.cvtColor(ir8, cv2.COLOR_GRAY2BGR)
+                    if self._vw_ir is None:
+                        h_i, w_i = ir_bgr.shape[:2]
+                        fourcc_i = cv2.VideoWriter_fourcc(*"mp4v")
+                        self._vw_ir = cv2.VideoWriter(ir_mp4, fourcc_i, float(self._video_fps), (w_i, h_i))
+                    ir_bgr = np.ascontiguousarray(ir_bgr)
+                    self._vw_ir.write(ir_bgr)
                     del ir_img
                 if self.rec_file_pen is None:
                     self.rec_file_pen = open(os.path.join(self.rec_dir, "pen_data.jsonl"), 'a')
@@ -179,6 +196,12 @@ class RecordingManager(QObject):
         if self.rec_file_pen:
             self.rec_file_pen.close()
             self.rec_file_pen = None
+        if self._vw_color is not None:
+            self._vw_color.release()
+            self._vw_color = None
+        if self._vw_ir is not None:
+            self._vw_ir.release()
+            self._vw_ir = None
         gc.collect()
 
     def _wait_for_writer(self):

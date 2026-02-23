@@ -161,18 +161,18 @@ class AppController(QThread):
                 self._perf_read += (t1 - t0)
                 tracker_result = self.tracker.track(frame)
                 t2 = time.time()
-                
+                # Visualization
+                output_frames = self.track_processor.process(frame, tracker_result, self.cam)
+
+
+                t3 = time.time()
                 # Recording
                 if self.rec_manager.is_recording:
                     self.rec_manager.record_frame(frame, tracker_result)
-                t3 = time.time()
-                
-                # Visualization
-                output_frames = self.track_processor.process(frame, tracker_result, self.cam)
                 t4 = time.time()
                 self._perf_track += (t2 - t1)
-                self._perf_record += (t3 - t2)
-                self._perf_vis += (t4 - t3)
+                self._perf_vis += (t3 - t2)
+                self._perf_record += (t4 - t3)
                 self._perf_cnt += 1
                 if now - self._perf_last_ts >= 1.0 and self._perf_cnt > 0:
                     r = (self._perf_read / self._perf_cnt) * 1000.0

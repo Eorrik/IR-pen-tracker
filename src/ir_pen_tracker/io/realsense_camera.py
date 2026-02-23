@@ -159,7 +159,7 @@ class RealSenseCamera(ICamera):
         #     depth = depth.astype(np.uint16)
         color = None
         if color_frame is not None:
-            color = np.asanyarray(color_frame.get_data())
+            color = np.asanyarray(color_frame.get_data()).copy()
         ir_left = None
         ir_right = None
         if ir_frame_left is not None:
