@@ -113,6 +113,8 @@ class AppController(QThread):
             preset = str(rs_cfg.get("preset", "high_accuracy")).lower()
             laser_power = rs_cfg.get("laser_power", None)
             exposure = rs_cfg.get("exposure", None)
+            color_auto_exposure = rs_cfg.get("color_auto_exposure", None)
+            color_exposure = rs_cfg.get("color_exposure", None)
             
             depth_width = int(rs_cfg.get("depth_width", 1280))
             depth_height = int(rs_cfg.get("depth_height", 720))
@@ -122,7 +124,8 @@ class AppController(QThread):
             self.cam = RealSenseCamera(depth_width=depth_width, depth_height=depth_height,
                                            color_width=color_width, color_height=color_height,
                                            fps=fps, enable_ir=enable_ir, preset=preset,
-                                           laser_power=laser_power, exposure=exposure)
+                                           laser_power=laser_power, exposure=exposure,
+                                           color_auto_exposure=color_auto_exposure, color_exposure=color_exposure)
         else:
             self.cam = KinectCamera(
                 use_raw_color=True,

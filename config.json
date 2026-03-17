@@ -7,8 +7,8 @@
         "dictionary_id": "DICT_4X4_100"
     },
     "pen": {
-        "ir_threshold": 45000,
-        "min_area": 5,
+        "ir_threshold": 35000,
+        "min_area": 25,
         "max_area": 2000,
         "roi_scale": 0.5,
         "sample_margin": 0.2,
@@ -26,7 +26,9 @@
       "fps": 30,
       "enable_ir": true,
       "laser_power": 0,
-      "exposure": 2000
+      "exposure": 600,
+      "color_auto_exposure": false,
+      "color_exposure": 80
     }
   },
   "debug": {

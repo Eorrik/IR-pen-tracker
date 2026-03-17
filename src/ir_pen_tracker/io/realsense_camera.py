@@ -9,7 +9,7 @@ from ..core.types import Frame
 rs = cast(Any, rs)
 
 class RealSenseCamera(ICamera):
-    def __init__(self, depth_width=640, depth_height=480, color_width=640, color_height=480, fps=30, enable_ir=True, preset="high_accuracy", laser_power: Optional[float] = None, exposure: Optional[float] = None):
+    def __init__(self, depth_width=640, depth_height=480, color_width=640, color_height=480, fps=30, enable_ir=True, preset="high_accuracy", laser_power: Optional[float] = None, exposure: Optional[float] = None, color_auto_exposure: Optional[bool] = None, color_exposure: Optional[float] = None):
         self._pipe: Optional[rs.pipeline] = None
         self._depth_sensor: Optional[rs.depth_sensor] = None
         self._cfg: Optional[rs.config] = None
@@ -38,6 +38,8 @@ class RealSenseCamera(ICamera):
         self._extrinsics_ir_r2l: Optional[tuple] = None
         self._laser_power: Optional[float] = laser_power
         self._exposure: Optional[float] = exposure
+        self._color_auto_exposure: Optional[bool] = color_auto_exposure
+        self._color_exposure: Optional[float] = color_exposure
 
     def open(self) -> bool:
         self._pipe = rs.pipeline()
@@ -62,6 +64,17 @@ class RealSenseCamera(ICamera):
             print("Auto Exposure Status:")
             print(depth_sensor.get_option(rs.option.enable_auto_exposure))
 
+        if self._color_auto_exposure is not None or self._color_exposure is not None:
+            sensors = list(dev.query_sensors())
+            color_sensor = next(s for s in sensors if s.get_info(rs.camera_info.name) == "RGB Camera")
+            if self._color_auto_exposure is not None:
+                color_sensor.set_option(rs.option.enable_auto_exposure, 1 if self._color_auto_exposure else 0)
+            if self._color_auto_exposure is False and self._color_exposure is not None:
+                color_sensor.set_option(rs.option.exposure, float(self._color_exposure))
+            print("Color Auto Exposure Status:")
+            print(color_sensor.get_option(rs.option.enable_auto_exposure))
+            print("Color Exposure Status:")
+            print(color_sensor.get_option(rs.option.exposure))
     
         pipe_profile = self._pipe.get_active_profile()
         # depth_sp = pipe_profile.get_stream(rs.stream.depth).as_video_stream_profile()  # 注释掉depth相关
@@ -184,7 +197,7 @@ class RealSenseCamera(ICamera):
             timestamp=ts,
             frame_id=self._frame_id,
             color=color,
-            depth=None,
+            depth=np.zeros((self._depth_h, self._depth_w), dtype=np.uint16),
             intrinsics=self._intrinsics,
             ir=ir_left,
             ir_main=ir_left,

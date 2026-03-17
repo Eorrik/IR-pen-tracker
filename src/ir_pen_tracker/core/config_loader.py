@@ -16,7 +16,9 @@ def load_config(config_path="config.json"):
             "fps": 30,
                 "enable_ir": True,
                 "laser_power": None,
-                "exposure": None
+                "exposure": None,
+                "color_auto_exposure": True,
+                "color_exposure": None
             }
         },
         "debug": {
